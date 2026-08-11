@@ -1,7 +1,17 @@
 /*
 ========================================================================
-  USER PROVISIONING SYSTEM FOR MSSQL  — v3
+  USER PROVISIONING SYSTEM FOR MSSQL  — v4
   Безопасна для многократного запуска (Idempotent)
+
+  v4: деактивация (IsActive=0) теперь реально отзывает доступ — не только
+  исключает пользователя из будущих прогонов. При IsActive=0 скрипт:
+    · отключает серверный логин (ALTER LOGIN ... DISABLE);
+    · снимает членство в серверной роли [sysadmin], если оно было;
+    · отзывает все управляемые роли/EXECUTE/VIEW DEFINITION во всех базах
+      из dbo.tDatabases (то же самое происходит и при смене Category у
+      активного пользователя — членство в [sysadmin] тоже теперь desired-state,
+      а не "только добавляем").
+  Обратное включение (IsActive=1) полностью восстанавливает доступ по матрице.
 
   МАТРИЦА ПРАВ (значения по умолчанию — меняй в tPermissionMatrix):
   ┌──────────────────────┬─────────┬───────────────────────────┬──────┬──────┐
@@ -26,12 +36,13 @@
               не нуждаются в явных EXEC/VIEW — они получают их через роль.
 
   ОБЪЕКТЫ (все создаются в базе [DBAProvisioning]):
+    [0] dbo.fnQuoteLiteral         — безопасное экранирование строк для dynamic SQL
     [1] dbo.tUserProvisioningList  — список пользователей
     [2] dbo.tUserProvisioningLog   — аудит-журнал
     [3] dbo.tPermissionMatrix      — матрица прав (редактируемая)
     [4] dbo.tDatabases             — список баз для провижна (редактируемый)
     [5] dbo.tPermissionOverride    — исключения из матрицы (группа или юзер + база)
-    [6] dbo.spProvisionUsers       — основная процедура (матрица)
+    [6] dbo.spProvisionUsers       — основная процедура (матрица + деprovision)
     [7] dbo.spProvisionOverrides   — процедура исключений (вызывается автоматически)
 
   В конце init-скрипта разово выполняется очистка tDatabases от баз,
@@ -63,6 +74,23 @@ ELSE
 GO
 
 USE [DBAProvisioning];
+GO
+
+-- ====================================================================
+-- [0] СЛУЖЕБНАЯ ФУНКЦИЯ: безопасное экранирование строкового литерала
+--     QUOTENAME(x, '''') официально работает только для строк ≤128
+--     символов (для более длинных документированно возвращает NULL) —
+--     он рассчитан на идентификаторы, а не на произвольные строки типа
+--     пароля (SqlPassword NVARCHAR(256)) или длинных логинов.
+--     Эта функция не имеет ограничения по длине.
+-- ====================================================================
+CREATE OR ALTER FUNCTION dbo.fnQuoteLiteral (@Value NVARCHAR(4000))
+RETURNS NVARCHAR(4000)
+WITH SCHEMABINDING
+AS
+BEGIN
+    RETURN N'''' + REPLACE(ISNULL(@Value, N''), N'''', N'''''') + N'''';
+END
 GO
 
 /*
@@ -394,6 +422,11 @@ CREATE OR ALTER PROCEDURE dbo.spProvisionUsers
   @DryRun = 1  →  только выводит что БЫЛО БЫ сделано, без изменений
   @DryRun = 0  →  применяет все изменения (по умолчанию)
 
+  Обрабатывает ВСЕХ пользователей из tUserProvisioningList, не только
+  активных: для IsActive=0 логин отключается, членство в [sysadmin] и все
+  управляемые роли/EXECUTE/VIEW DEFINITION во всех базах — отзываются.
+  Это реальный деprovision, а не просто исключение из будущих прогонов.
+
   Окружение (QA / PROD) задаётся один раз при первом прогоне init-скрипта
   и уже отражено в dbo.tPermissionMatrix — процедура просто читает матрицу.
 
@@ -416,6 +449,8 @@ BEGIN
         @LoginType   NVARCHAR(10),
         @SqlPassword NVARCHAR(256),
         @Category    NVARCHAR(50),
+        @IsUserActive BIT,             -- IsActive из tUserProvisioningList: 0 = деактивирован, доступ отзывается
+        @ShouldBeSysadmin BIT,
         @DbName      NVARCHAR(128),
         @IsDev       BIT,
         @DbType      NVARCHAR(10),
@@ -441,110 +476,167 @@ BEGIN
     PRINT @Prefix + N'spProvisionUsers  |  RunId: ' + CAST(@RunId AS NVARCHAR(40));
     PRINT N'=============================================================';
 
-    -- ── Перебираем активных пользователей ────────────────────────────
+    -- ── Перебираем ВСЕХ пользователей (не только активных) ────────────
+    -- Деактивированных (IsActive=0) тоже нужно пройти: их логин отключается,
+    -- членство в sysadmin и роли во всех базах отзываются (реальный деprovision,
+    -- а не просто "пропустить при следующих прогонах").
     DECLARE cur_Users CURSOR LOCAL FAST_FORWARD FOR
-        SELECT LoginName, LoginType, SqlPassword, Category
+        SELECT LoginName, LoginType, SqlPassword, Category, IsActive
         FROM   dbo.tUserProvisioningList
-        WHERE  IsActive = 1
         ORDER  BY LoginName;
 
     OPEN cur_Users;
-    FETCH NEXT FROM cur_Users INTO @LoginName, @LoginType, @SqlPassword, @Category;
+    FETCH NEXT FROM cur_Users INTO @LoginName, @LoginType, @SqlPassword, @Category, @IsUserActive;
 
     WHILE @@FETCH_STATUS = 0
     BEGIN
         PRINT N'';
         PRINT N'-------------------------------------------------------------';
-        PRINT @Prefix + N'Пользователь: ' + @LoginName + N'  [' + @Category + N']';
+        PRINT @Prefix + N'Пользователь: ' + @LoginName + N'  [' + @Category + N']'
+            + CASE WHEN @IsUserActive = 0 THEN N'  ** ДЕАКТИВИРОВАН — доступ отзывается **' ELSE N'' END;
         PRINT N'-------------------------------------------------------------';
 
         -- =============================================================
-        -- A. СЕРВЕРНЫЙ ЛОГИН: создаём или включаем
+        -- A. СЕРВЕРНЫЙ ЛОГИН: активным — создаём/включаем,
+        --    деактивированным (IsActive=0) — отключаем.
         -- =============================================================
         BEGIN TRY
-            IF NOT EXISTS (
-                SELECT 1 FROM sys.server_principals
-                WHERE  name = @LoginName AND type IN ('U', 'S', 'G')
-            )
+            IF @IsUserActive = 1
             BEGIN
-                IF @LoginType = 'WINDOWS'
-                    SET @SQL = N'CREATE LOGIN ' + QUOTENAME(@LoginName)
-                             + N' FROM WINDOWS WITH DEFAULT_DATABASE = [master];';
-                ELSE
-                BEGIN
-                    IF ISNULL(@SqlPassword, N'') = N''
-                        THROW 50001, 'SQL-логин требует непустой пароль в поле SqlPassword.', 1;
-                    SET @SQL = N'CREATE LOGIN ' + QUOTENAME(@LoginName)
-                             + N' WITH PASSWORD     = N' + QUOTENAME(@SqlPassword, N'''')
-                             + N'   , DEFAULT_DATABASE = [master]'
-                             + N'   , CHECK_EXPIRATION = OFF'
-                             + N'   , CHECK_POLICY     = ON;';
-                END
-
-                IF @DryRun = 0 EXEC sp_executesql @SQL;
-
-                SET @LogStatus = CASE WHEN @DryRun=1 THEN N'DRY_RUN' ELSE N'OK' END;
-                -- Пароль SQL-логина НЕ пишем в лог — только тип и имя.
-                -- @SQL содержит WITH PASSWORD = N'...' в открытом виде.
-                INSERT INTO dbo.tUserProvisioningLog (RunId, LoginName, Scope, Action, Status, Details)
-                VALUES (@RunId, @LoginName, N'SERVER', N'CREATE LOGIN', @LogStatus,
-                        N'Type=' + @LoginType
-                        + CASE WHEN @LoginType = 'WINDOWS'
-                               THEN N' | ' + @SQL
-                               ELSE N' | CREATE LOGIN ' + QUOTENAME(@LoginName)
-                                  + N' WITH PASSWORD=***REDACTED***;'
-                          END);
-                PRINT @Prefix + N'  [+] Логин создан (' + @LoginType + N').';
-            END
-            ELSE
-            BEGIN
-                -- Fix #8: ALTER LOGIN ENABLE только если логин реально выключен.
-                -- Вызов вхолостую на каждый прогон засоряет лог и создаёт DDL без нужды.
-                IF EXISTS (
+                IF NOT EXISTS (
                     SELECT 1 FROM sys.server_principals
-                    WHERE  name = @LoginName AND is_disabled = 1
+                    WHERE  name = @LoginName AND type IN ('U', 'S', 'G')
                 )
                 BEGIN
-                    SET @SQL = N'ALTER LOGIN ' + QUOTENAME(@LoginName) + N' ENABLE;';
+                    IF @LoginType = 'WINDOWS'
+                        SET @SQL = N'CREATE LOGIN ' + QUOTENAME(@LoginName)
+                                 + N' FROM WINDOWS WITH DEFAULT_DATABASE = [master];';
+                    ELSE
+                    BEGIN
+                        IF ISNULL(@SqlPassword, N'') = N''
+                            THROW 50001, 'SQL-логин требует непустой пароль в поле SqlPassword.', 1;
+                        SET @SQL = N'CREATE LOGIN ' + QUOTENAME(@LoginName)
+                                 + N' WITH PASSWORD     = N' + dbo.fnQuoteLiteral(@SqlPassword)
+                                 + N'   , DEFAULT_DATABASE = [master]'
+                                 + N'   , CHECK_EXPIRATION = OFF'
+                                 + N'   , CHECK_POLICY     = ON;';
+                    END
+
                     IF @DryRun = 0 EXEC sp_executesql @SQL;
+
+                    SET @LogStatus = CASE WHEN @DryRun=1 THEN N'DRY_RUN' ELSE N'OK' END;
+                    -- Пароль SQL-логина НЕ пишем в лог — только тип и имя.
+                    -- @SQL содержит WITH PASSWORD = N'...' в открытом виде.
+                    INSERT INTO dbo.tUserProvisioningLog (RunId, LoginName, Scope, Action, Status, Details)
+                    VALUES (@RunId, @LoginName, N'SERVER', N'CREATE LOGIN', @LogStatus,
+                            N'Type=' + @LoginType
+                            + CASE WHEN @LoginType = 'WINDOWS'
+                                   THEN N' | ' + @SQL
+                                   ELSE N' | CREATE LOGIN ' + QUOTENAME(@LoginName)
+                                      + N' WITH PASSWORD=***REDACTED***;'
+                              END);
+                    PRINT @Prefix + N'  [+] Логин создан (' + @LoginType + N').';
+
+                    -- Пароль в открытом виде больше не нужен — он живёт в таблице
+                    -- только до момента создания логина, дальше это лишний секрет.
+                    IF @DryRun = 0 AND @LoginType = 'SQL'
+                        UPDATE dbo.tUserProvisioningList
+                        SET    SqlPassword = NULL
+                        WHERE  LoginName = @LoginName;
+                END
+                ELSE
+                BEGIN
+                    -- Fix #8: ALTER LOGIN ENABLE только если логин реально выключен.
+                    -- Вызов вхолостую на каждый прогон засоряет лог и создаёт DDL без нужды.
+                    IF EXISTS (
+                        SELECT 1 FROM sys.server_principals
+                        WHERE  name = @LoginName AND is_disabled = 1
+                    )
+                    BEGIN
+                        SET @SQL = N'ALTER LOGIN ' + QUOTENAME(@LoginName) + N' ENABLE;';
+                        IF @DryRun = 0 EXEC sp_executesql @SQL;
+                        INSERT INTO dbo.tUserProvisioningLog (RunId, LoginName, Scope, Action, Status)
+                        VALUES (@RunId, @LoginName, N'SERVER', N'LOGIN WAS DISABLED -> ENABLED', N'OK');
+                        PRINT @Prefix + N'  [!] Логин был отключён — включён.';
+                    END
+                    ELSE
+                    BEGIN
+                        INSERT INTO dbo.tUserProvisioningLog (RunId, LoginName, Scope, Action, Status)
+                        VALUES (@RunId, @LoginName, N'SERVER', N'LOGIN EXISTS, ENABLED', N'SKIPPED');
+                        PRINT @Prefix + N'  [=] Логин уже существует и включён.';
+                    END
+                END
+            END
+            ELSE  -- @IsUserActive = 0: доступ отзывается, логин должен быть отключён
+            BEGIN
+                IF EXISTS (
+                    SELECT 1 FROM sys.server_principals
+                    WHERE  name = @LoginName AND type IN ('U', 'S', 'G') AND is_disabled = 0
+                )
+                BEGIN
+                    SET @SQL = N'ALTER LOGIN ' + QUOTENAME(@LoginName) + N' DISABLE;';
+                    IF @DryRun = 0 EXEC sp_executesql @SQL;
+                    SET @LogStatus = CASE WHEN @DryRun=1 THEN N'DRY_RUN' ELSE N'OK' END;
                     INSERT INTO dbo.tUserProvisioningLog (RunId, LoginName, Scope, Action, Status)
-                    VALUES (@RunId, @LoginName, N'SERVER', N'LOGIN WAS DISABLED -> ENABLED', N'OK');
-                    PRINT @Prefix + N'  [!] Логин был отключён — включён.';
+                    VALUES (@RunId, @LoginName, N'SERVER', N'DEACTIVATED -> LOGIN DISABLED', @LogStatus);
+                    PRINT @Prefix + N'  [-] Пользователь деактивирован — логин отключён.';
                 END
                 ELSE
                 BEGIN
                     INSERT INTO dbo.tUserProvisioningLog (RunId, LoginName, Scope, Action, Status)
-                    VALUES (@RunId, @LoginName, N'SERVER', N'LOGIN EXISTS, ENABLED', N'SKIPPED');
-                    PRINT @Prefix + N'  [=] Логин уже существует и включён.';
+                    VALUES (@RunId, @LoginName, N'SERVER', N'DEACTIVATED, LOGIN ALREADY DISABLED/ABSENT', N'SKIPPED');
+                    PRINT @Prefix + N'  [=] Пользователь деактивирован, логин уже отключён/отсутствует.';
                 END
             END
         END TRY
         BEGIN CATCH
             INSERT INTO dbo.tUserProvisioningLog (RunId, LoginName, Scope, Action, Status, Details)
-            VALUES (@RunId, @LoginName, N'SERVER', N'CREATE/ENABLE LOGIN', N'ERROR', ERROR_MESSAGE());
+            VALUES (@RunId, @LoginName, N'SERVER', N'CREATE/ENABLE/DISABLE LOGIN', N'ERROR', ERROR_MESSAGE());
             PRINT N'  [!] ОШИБКА (логин): ' + ERROR_MESSAGE();
         END CATCH;
 
         -- =============================================================
-        -- B. СЕРВЕРНАЯ РОЛЬ — только для DB Admin
+        -- B. СЕРВЕРНАЯ РОЛЬ [sysadmin] — desired state.
+        --    Должен быть членом только активный DB Admin. Для всех
+        --    остальных (в т.ч. DB Admin, которого деактивировали или
+        --    перевели в другую категорию) членство снимается —
+        --    иначе право sysadmin переживало бы смену роли/увольнение.
         -- =============================================================
-        IF @Category = N'DB Admin'
-        BEGIN
-            BEGIN TRY
-                SET @SQL = N'ALTER SERVER ROLE [sysadmin] ADD MEMBER '
-                         + QUOTENAME(@LoginName) + N';';
-                IF @DryRun = 0 EXEC sp_executesql @SQL;
-                SET @LogStatus = CASE WHEN @DryRun=1 THEN N'DRY_RUN' ELSE N'OK' END;
-                INSERT INTO dbo.tUserProvisioningLog (RunId, LoginName, Scope, Action, Status)
-                VALUES (@RunId, @LoginName, N'SERVER', N'ADD TO [sysadmin]', @LogStatus);
-                PRINT @Prefix + N'  [+] Добавлен в серверную роль [sysadmin].';
-            END TRY
-            BEGIN CATCH
-                INSERT INTO dbo.tUserProvisioningLog (RunId, LoginName, Scope, Action, Status, Details)
-                VALUES (@RunId, @LoginName, N'SERVER', N'ADD TO [sysadmin]', N'ERROR', ERROR_MESSAGE());
-                PRINT N'  [!] ОШИБКА (sysadmin): ' + ERROR_MESSAGE();
-            END CATCH;
-        END
+        SET @ShouldBeSysadmin = CASE WHEN @Category = N'DB Admin' AND @IsUserActive = 1 THEN 1 ELSE 0 END;
+
+        BEGIN TRY
+            IF @ShouldBeSysadmin = 1
+            BEGIN
+                IF ISNULL(IS_SRVROLEMEMBER('sysadmin', @LoginName), 0) = 0
+                BEGIN
+                    SET @SQL = N'ALTER SERVER ROLE [sysadmin] ADD MEMBER '
+                             + QUOTENAME(@LoginName) + N';';
+                    IF @DryRun = 0 EXEC sp_executesql @SQL;
+                    SET @LogStatus = CASE WHEN @DryRun=1 THEN N'DRY_RUN' ELSE N'OK' END;
+                    INSERT INTO dbo.tUserProvisioningLog (RunId, LoginName, Scope, Action, Status)
+                    VALUES (@RunId, @LoginName, N'SERVER', N'ADD TO [sysadmin]', @LogStatus);
+                    PRINT @Prefix + N'  [+] Добавлен в серверную роль [sysadmin].';
+                END
+            END
+            ELSE
+            BEGIN
+                IF ISNULL(IS_SRVROLEMEMBER('sysadmin', @LoginName), 0) = 1
+                BEGIN
+                    SET @SQL = N'ALTER SERVER ROLE [sysadmin] DROP MEMBER '
+                             + QUOTENAME(@LoginName) + N';';
+                    IF @DryRun = 0 EXEC sp_executesql @SQL;
+                    SET @LogStatus = CASE WHEN @DryRun=1 THEN N'DRY_RUN' ELSE N'OK' END;
+                    INSERT INTO dbo.tUserProvisioningLog (RunId, LoginName, Scope, Action, Status)
+                    VALUES (@RunId, @LoginName, N'SERVER', N'REMOVE FROM [sysadmin]', @LogStatus);
+                    PRINT @Prefix + N'  [-] Снят из серверной роли [sysadmin] (категория/статус изменились).';
+                END
+            END
+        END TRY
+        BEGIN CATCH
+            INSERT INTO dbo.tUserProvisioningLog (RunId, LoginName, Scope, Action, Status, Details)
+            VALUES (@RunId, @LoginName, N'SERVER', N'SYNC [sysadmin]', N'ERROR', ERROR_MESSAGE());
+            PRINT N'  [!] ОШИБКА (sysadmin): ' + ERROR_MESSAGE();
+        END CATCH;
 
         -- =============================================================
         -- C. ПРОВИЖН В КАЖДОЙ БАЗЕ
@@ -577,28 +669,35 @@ BEGIN
                 -- ── Определяем тип базы для матрицы прав ────────────
                 SET @DbType = CASE WHEN @IsDev = 1 THEN N'DEV' ELSE N'PROD' END;
 
-                -- ── Читаем права из tPermissionMatrix ─────────────────
+                -- ── Читаем права из tPermissionMatrix (только для активных) ──
                 -- ВАЖНО: сброс перед SELECT обязателен.
                 -- Если строки нет — SQL Server НЕ обнуляет переменные сам,
                 -- они остаются со значениями предыдущей итерации (stale data).
                 SELECT @DbRoles = NULL, @GrantExec = 0, @GrantViewDef = 0;
 
-                SELECT @DbRoles      = DbRoles,
-                       @GrantExec    = GrantExecute,
-                       @GrantViewDef = GrantViewDefinition
-                FROM   dbo.tPermissionMatrix
-                WHERE  Category = @Category AND DbType = @DbType;
-
-                IF @DbRoles IS NULL
+                IF @IsUserActive = 1
                 BEGIN
-                    INSERT INTO dbo.tUserProvisioningLog
-                        (RunId, LoginName, Scope, Action, Status, Details)
-                    VALUES (@RunId, @LoginName, @DbName, N'SKIP - NO RULE', N'SKIPPED',
-                            N'Нет правила в tPermissionMatrix для ' + @Category + N' / ' + @DbType);
-                    PRINT N'  [?] Нет правила в tPermissionMatrix: ' + @Category + N' / ' + @DbType;
-                    FETCH NEXT FROM cur_DB INTO @DbName, @IsDev;
-                    CONTINUE;
+                    SELECT @DbRoles      = DbRoles,
+                           @GrantExec    = GrantExecute,
+                           @GrantViewDef = GrantViewDefinition
+                    FROM   dbo.tPermissionMatrix
+                    WHERE  Category = @Category AND DbType = @DbType;
+
+                    IF @DbRoles IS NULL
+                    BEGIN
+                        INSERT INTO dbo.tUserProvisioningLog
+                            (RunId, LoginName, Scope, Action, Status, Details)
+                        VALUES (@RunId, @LoginName, @DbName, N'SKIP - NO RULE', N'SKIPPED',
+                                N'Нет правила в tPermissionMatrix для ' + @Category + N' / ' + @DbType);
+                        PRINT N'  [?] Нет правила в tPermissionMatrix: ' + @Category + N' / ' + @DbType;
+                        FETCH NEXT FROM cur_DB INTO @DbName, @IsDev;
+                        CONTINUE;
+                    END
                 END
+                ELSE
+                    -- Деактивирован: желаемое состояние = никаких управляемых прав.
+                    -- CleanupSQL ниже построится так, что снимет всё лишнее.
+                    SET @DbRoles = N'';
 
                 -- ══════════════════════════════════════════════════════
                 -- DESIRED STATE: сначала убираем всё лишнее,
@@ -625,25 +724,25 @@ BEGIN
                 SET @CleanupSQL =
                     N'USE ' + QUOTENAME(@DbName) + N';' + NCHAR(10)
                   + N'IF EXISTS (SELECT 1 FROM sys.database_principals' + NCHAR(10)
-                  + N'           WHERE name = N' + QUOTENAME(@LoginName, N'''') + NCHAR(10)
+                  + N'           WHERE name = N' + dbo.fnQuoteLiteral(@LoginName) + NCHAR(10)
                   + N'             AND type IN (''U'',''S'',''G''))' + NCHAR(10)
                   + N'BEGIN' + NCHAR(10)
 
                   -- db_owner
                   + CASE WHEN @HasOwner = 0 THEN
-                        N'    IF IS_ROLEMEMBER(''db_owner'', N' + QUOTENAME(@LoginName, N'''') + N') = 1' + NCHAR(10)
+                        N'    IF IS_ROLEMEMBER(''db_owner'', N' + dbo.fnQuoteLiteral(@LoginName) + N') = 1' + NCHAR(10)
                       + N'        ALTER ROLE [db_owner] DROP MEMBER ' + QUOTENAME(@LoginName) + N';' + NCHAR(10)
                     ELSE N'' END
 
                   -- db_datareader
                   + CASE WHEN @HasReader = 0 THEN
-                        N'    IF IS_ROLEMEMBER(''db_datareader'', N' + QUOTENAME(@LoginName, N'''') + N') = 1' + NCHAR(10)
+                        N'    IF IS_ROLEMEMBER(''db_datareader'', N' + dbo.fnQuoteLiteral(@LoginName) + N') = 1' + NCHAR(10)
                       + N'        ALTER ROLE [db_datareader] DROP MEMBER ' + QUOTENAME(@LoginName) + N';' + NCHAR(10)
                     ELSE N'' END
 
                   -- db_datawriter
                   + CASE WHEN @HasWriter = 0 THEN
-                        N'    IF IS_ROLEMEMBER(''db_datawriter'', N' + QUOTENAME(@LoginName, N'''') + N') = 1' + NCHAR(10)
+                        N'    IF IS_ROLEMEMBER(''db_datawriter'', N' + dbo.fnQuoteLiteral(@LoginName) + N') = 1' + NCHAR(10)
                       + N'        ALTER ROLE [db_datawriter] DROP MEMBER ' + QUOTENAME(@LoginName) + N';' + NCHAR(10)
                     ELSE N'' END
 
@@ -652,7 +751,7 @@ BEGIN
                         N'    IF EXISTS (SELECT 1 FROM sys.database_permissions' + NCHAR(10)
                       + N'               WHERE class = 0 AND state IN (''G'',''W'')' + NCHAR(10)
                       + N'                 AND permission_name = ''EXECUTE''' + NCHAR(10)
-                      + N'                 AND grantee_principal_id = DATABASE_PRINCIPAL_ID(N' + QUOTENAME(@LoginName, N'''') + N'))' + NCHAR(10)
+                      + N'                 AND grantee_principal_id = DATABASE_PRINCIPAL_ID(N' + dbo.fnQuoteLiteral(@LoginName) + N'))' + NCHAR(10)
                       + N'        REVOKE EXECUTE FROM ' + QUOTENAME(@LoginName) + N';' + NCHAR(10)
                     ELSE N'' END
 
@@ -661,7 +760,7 @@ BEGIN
                         N'    IF EXISTS (SELECT 1 FROM sys.database_permissions' + NCHAR(10)
                       + N'               WHERE class = 0 AND state IN (''G'',''W'')' + NCHAR(10)
                       + N'                 AND permission_name = ''VIEW DEFINITION''' + NCHAR(10)
-                      + N'                 AND grantee_principal_id = DATABASE_PRINCIPAL_ID(N' + QUOTENAME(@LoginName, N'''') + N'))' + NCHAR(10)
+                      + N'                 AND grantee_principal_id = DATABASE_PRINCIPAL_ID(N' + dbo.fnQuoteLiteral(@LoginName) + N'))' + NCHAR(10)
                       + N'        REVOKE VIEW DEFINITION FROM ' + QUOTENAME(@LoginName) + N';' + NCHAR(10)
                     ELSE N'' END
 
@@ -669,87 +768,105 @@ BEGIN
 
                 -- ── Строим SQL назначения ролей из DbRoles (через |) ─
                 --    STRING_SPLIT требует SQL Server 2016+
-                SET @RoleSQL = N'';
+                --    Для деактивированных (@IsUserActive=0) не строим и не
+                --    выполняем — им ничего выдавать не нужно, только чистить
+                --    существующее (см. @CleanupSQL, он выполняется ниже всегда).
+                IF @IsUserActive = 1
+                BEGIN
+                    SET @RoleSQL = N'';
 
-                -- LTRIM(RTRIM()) вместо TRIM(): TRIM появился в SQL Server 2017,
-                -- STRING_SPLIT — в 2016. Используем совместимый вариант.
-                SELECT @RoleSQL += N'ALTER ROLE '
-                    + QUOTENAME(LTRIM(RTRIM(value)))
-                    + N' ADD MEMBER ' + QUOTENAME(@LoginName) + N';' + NCHAR(10)
-                FROM   STRING_SPLIT(@DbRoles, N'|')
-                WHERE  LTRIM(RTRIM(value)) <> N'';
+                    -- LTRIM(RTRIM()) вместо TRIM(): TRIM появился в SQL Server 2017,
+                    -- STRING_SPLIT — в 2016. Используем совместимый вариант.
+                    SELECT @RoleSQL += N'ALTER ROLE '
+                        + QUOTENAME(LTRIM(RTRIM(value)))
+                        + N' ADD MEMBER ' + QUOTENAME(@LoginName) + N';' + NCHAR(10)
+                    FROM   STRING_SPLIT(@DbRoles, N'|')
+                    WHERE  LTRIM(RTRIM(value)) <> N'';
 
-                IF @GrantExec = 1
-                    SET @RoleSQL += N'GRANT EXECUTE TO ' + QUOTENAME(@LoginName) + N';' + NCHAR(10);
+                    IF @GrantExec = 1
+                        SET @RoleSQL += N'GRANT EXECUTE TO ' + QUOTENAME(@LoginName) + N';' + NCHAR(10);
 
-                -- GRANT VIEW DEFINITION:
-                --   Без этого read-only пользователь не видит код процедур, вьюх, функций.
-                --   sp_helptext и OBJECT_DEFINITION() возвращают NULL / ошибку.
-                --   Не даёт никаких прав на изменение или выполнение объектов.
-                IF @GrantViewDef = 1
-                    SET @RoleSQL += N'GRANT VIEW DEFINITION TO ' + QUOTENAME(@LoginName) + N';';
+                    -- GRANT VIEW DEFINITION:
+                    --   Без этого read-only пользователь не видит код процедур, вьюх, функций.
+                    --   sp_helptext и OBJECT_DEFINITION() возвращают NULL / ошибку.
+                    --   Не даёт никаких прав на изменение или выполнение объектов.
+                    IF @GrantViewDef = 1
+                        SET @RoleSQL += N'GRANT VIEW DEFINITION TO ' + QUOTENAME(@LoginName) + N';';
 
-                -- ── Итоговый блок: переключение, создание юзера, права ─
-                SET @SQL =
-                    N'USE ' + QUOTENAME(@DbName) + N';' + NCHAR(10)
+                    -- ── Итоговый блок: переключение, создание юзера, права ─
+                    SET @SQL =
+                        N'USE ' + QUOTENAME(@DbName) + N';' + NCHAR(10)
 
-                    -- Создаём пользователя если нет
-                  + N'IF NOT EXISTS (' + NCHAR(10)
-                  + N'    SELECT 1 FROM sys.database_principals' + NCHAR(10)
-                  + N'    WHERE  name = N' + QUOTENAME(@LoginName, N'''') + NCHAR(10)
-                  + N'      AND  type IN (''U'', ''S'', ''G'')' + NCHAR(10)
-                  + N')' + NCHAR(10)
-                  + N'BEGIN' + NCHAR(10)
-                  + N'    CREATE USER ' + QUOTENAME(@LoginName)
-                  + N' FOR LOGIN ' + QUOTENAME(@LoginName) + N';' + NCHAR(10)
-                  + N'END' + NCHAR(10)
+                        -- Создаём пользователя если нет
+                      + N'IF NOT EXISTS (' + NCHAR(10)
+                      + N'    SELECT 1 FROM sys.database_principals' + NCHAR(10)
+                      + N'    WHERE  name = N' + dbo.fnQuoteLiteral(@LoginName) + NCHAR(10)
+                      + N'      AND  type IN (''U'', ''S'', ''G'')' + NCHAR(10)
+                      + N')' + NCHAR(10)
+                      + N'BEGIN' + NCHAR(10)
+                      + N'    CREATE USER ' + QUOTENAME(@LoginName)
+                      + N' FOR LOGIN ' + QUOTENAME(@LoginName) + N';' + NCHAR(10)
+                      + N'END' + NCHAR(10)
 
-                  -- Фиксируем orphaned user (SID рассинхронизирован)
-                  + N'ELSE IF EXISTS (' + NCHAR(10)
-                  + N'    SELECT 1 FROM sys.database_principals dp' + NCHAR(10)
-                  + N'    WHERE  dp.name = N' + QUOTENAME(@LoginName, N'''') + NCHAR(10)
-                  + N'      AND  dp.sid <> SUSER_SID(N' + QUOTENAME(@LoginName, N'''') + N')' + NCHAR(10)
-                  + N'      AND  SUSER_SID(N' + QUOTENAME(@LoginName, N'''') + N') IS NOT NULL' + NCHAR(10)
-                  + N')' + NCHAR(10)
-                  + N'BEGIN' + NCHAR(10)
-                  + N'    ALTER USER ' + QUOTENAME(@LoginName)
-                  + N' WITH LOGIN = ' + QUOTENAME(@LoginName) + N';' + NCHAR(10)
-                  + N'END' + NCHAR(10)
+                      -- Фиксируем orphaned user (SID рассинхронизирован)
+                      + N'ELSE IF EXISTS (' + NCHAR(10)
+                      + N'    SELECT 1 FROM sys.database_principals dp' + NCHAR(10)
+                      + N'    WHERE  dp.name = N' + dbo.fnQuoteLiteral(@LoginName) + NCHAR(10)
+                      + N'      AND  dp.sid <> SUSER_SID(N' + dbo.fnQuoteLiteral(@LoginName) + N')' + NCHAR(10)
+                      + N'      AND  SUSER_SID(N' + dbo.fnQuoteLiteral(@LoginName) + N') IS NOT NULL' + NCHAR(10)
+                      + N')' + NCHAR(10)
+                      + N'BEGIN' + NCHAR(10)
+                      + N'    ALTER USER ' + QUOTENAME(@LoginName)
+                      + N' WITH LOGIN = ' + QUOTENAME(@LoginName) + N';' + NCHAR(10)
+                      + N'END' + NCHAR(10)
 
-                  -- Назначение ролей (из @RoleSQL)
-                  + @RoleSQL;
+                      -- Назначение ролей (из @RoleSQL)
+                      + @RoleSQL;
+                END
 
-                -- Шаг 1: отзываем лишние права (desired-state cleanup)
+                -- Шаг 1: отзываем лишние права (desired-state cleanup) — всегда,
+                --        в т.ч. для деактивированных (это и есть реальный деprovision)
                 IF @DryRun = 0
                     EXEC sp_executesql @CleanupSQL;
                 ELSE
                     PRINT N'    [CLEANUP] ' + @CleanupSQL;
 
-                -- Шаг 2: создаём юзера и выдаём актуальные права из матрицы
-                IF @DryRun = 0
-                    EXEC sp_executesql @SQL;
-                ELSE
-                    PRINT N'    [GRANT]   ' + @SQL;
+                -- Шаг 2: создаём юзера и выдаём актуальные права из матрицы —
+                --        только для активных пользователей
+                IF @IsUserActive = 1
+                BEGIN
+                    IF @DryRun = 0
+                        EXEC sp_executesql @SQL;
+                    ELSE
+                        PRINT N'    [GRANT]   ' + @SQL;
+                END
 
                 SET @LogStatus = CASE WHEN @DryRun=1 THEN N'DRY_RUN' ELSE N'OK' END;
                 INSERT INTO dbo.tUserProvisioningLog
                     (RunId, LoginName, Scope, Action, Status, Details)
-                VALUES (@RunId, @LoginName, @DbName, N'PROVISION', @LogStatus,
+                VALUES (@RunId, @LoginName, @DbName,
+                        CASE WHEN @IsUserActive = 1 THEN N'PROVISION' ELSE N'DEPROVISION' END,
+                        @LogStatus,
                         N'DbType=' + @DbType
                         + N' | Roles='   + ISNULL(@DbRoles, N'')
                         + N' | Exec='    + CAST(@GrantExec    AS NCHAR(1))
                         + N' | ViewDef=' + CAST(@GrantViewDef AS NCHAR(1)));
 
-                PRINT @Prefix + N'  [v] ' + @DbName
-                    + N' (' + @DbType + N') -> ' + ISNULL(@DbRoles, N'—')
-                    + CASE WHEN @GrantExec    = 1 THEN N' + EXECUTE'         ELSE N'' END
-                    + CASE WHEN @GrantViewDef = 1 THEN N' + VIEW DEFINITION' ELSE N'' END;
+                IF @IsUserActive = 1
+                    PRINT @Prefix + N'  [v] ' + @DbName
+                        + N' (' + @DbType + N') -> ' + ISNULL(@DbRoles, N'—')
+                        + CASE WHEN @GrantExec    = 1 THEN N' + EXECUTE'         ELSE N'' END
+                        + CASE WHEN @GrantViewDef = 1 THEN N' + VIEW DEFINITION' ELSE N'' END;
+                ELSE
+                    PRINT @Prefix + N'  [-] ' + @DbName + N' (' + @DbType + N') -> доступ отозван';
 
             END TRY
             BEGIN CATCH
                 INSERT INTO dbo.tUserProvisioningLog
                     (RunId, LoginName, Scope, Action, Status, Details)
-                VALUES (@RunId, @LoginName, @DbName, N'PROVISION', N'ERROR', ERROR_MESSAGE());
+                VALUES (@RunId, @LoginName, @DbName,
+                        CASE WHEN @IsUserActive = 1 THEN N'PROVISION' ELSE N'DEPROVISION' END,
+                        N'ERROR', ERROR_MESSAGE());
                 PRINT N'  [!] ОШИБКА в [' + @DbName + N']: ' + ERROR_MESSAGE();
             END CATCH;
 
@@ -759,7 +876,7 @@ BEGIN
         CLOSE cur_DB;
         DEALLOCATE cur_DB;
 
-        FETCH NEXT FROM cur_Users INTO @LoginName, @LoginType, @SqlPassword, @Category;
+        FETCH NEXT FROM cur_Users INTO @LoginName, @LoginType, @SqlPassword, @Category, @IsUserActive;
     END -- while cur_Users
 
     CLOSE cur_Users;
@@ -928,31 +1045,31 @@ BEGIN
                 SET @CleanupSQL =
                     N'USE ' + QUOTENAME(@DbName) + N';' + NCHAR(10)
                   + N'IF EXISTS (SELECT 1 FROM sys.database_principals' + NCHAR(10)
-                  + N'           WHERE name = N' + QUOTENAME(@LoginName, N'''') + NCHAR(10)
+                  + N'           WHERE name = N' + dbo.fnQuoteLiteral(@LoginName) + NCHAR(10)
                   + N'             AND type IN (''U'',''S'',''G''))' + NCHAR(10)
                   + N'BEGIN' + NCHAR(10)
                   + CASE WHEN @HasOwner = 0 THEN
-                        N'    IF IS_ROLEMEMBER(''db_owner'', N' + QUOTENAME(@LoginName, N'''') + N') = 1' + NCHAR(10)
+                        N'    IF IS_ROLEMEMBER(''db_owner'', N' + dbo.fnQuoteLiteral(@LoginName) + N') = 1' + NCHAR(10)
                       + N'        ALTER ROLE [db_owner] DROP MEMBER ' + QUOTENAME(@LoginName) + N';' + NCHAR(10)
                     ELSE N'' END
                   + CASE WHEN @HasReader = 0 THEN
-                        N'    IF IS_ROLEMEMBER(''db_datareader'', N' + QUOTENAME(@LoginName, N'''') + N') = 1' + NCHAR(10)
+                        N'    IF IS_ROLEMEMBER(''db_datareader'', N' + dbo.fnQuoteLiteral(@LoginName) + N') = 1' + NCHAR(10)
                       + N'        ALTER ROLE [db_datareader] DROP MEMBER ' + QUOTENAME(@LoginName) + N';' + NCHAR(10)
                     ELSE N'' END
                   + CASE WHEN @HasWriter = 0 THEN
-                        N'    IF IS_ROLEMEMBER(''db_datawriter'', N' + QUOTENAME(@LoginName, N'''') + N') = 1' + NCHAR(10)
+                        N'    IF IS_ROLEMEMBER(''db_datawriter'', N' + dbo.fnQuoteLiteral(@LoginName) + N') = 1' + NCHAR(10)
                       + N'        ALTER ROLE [db_datawriter] DROP MEMBER ' + QUOTENAME(@LoginName) + N';' + NCHAR(10)
                     ELSE N'' END
                   + CASE WHEN @GrantExec = 0 THEN
                         N'    IF EXISTS (SELECT 1 FROM sys.database_permissions' + NCHAR(10)
                       + N'               WHERE class = 0 AND state IN (''G'',''W'') AND permission_name = ''EXECUTE''' + NCHAR(10)
-                      + N'                 AND grantee_principal_id = DATABASE_PRINCIPAL_ID(N' + QUOTENAME(@LoginName, N'''') + N'))' + NCHAR(10)
+                      + N'                 AND grantee_principal_id = DATABASE_PRINCIPAL_ID(N' + dbo.fnQuoteLiteral(@LoginName) + N'))' + NCHAR(10)
                       + N'        REVOKE EXECUTE FROM ' + QUOTENAME(@LoginName) + N';' + NCHAR(10)
                     ELSE N'' END
                   + CASE WHEN @GrantViewDef = 0 THEN
                         N'    IF EXISTS (SELECT 1 FROM sys.database_permissions' + NCHAR(10)
                       + N'               WHERE class = 0 AND state IN (''G'',''W'') AND permission_name = ''VIEW DEFINITION''' + NCHAR(10)
-                      + N'                 AND grantee_principal_id = DATABASE_PRINCIPAL_ID(N' + QUOTENAME(@LoginName, N'''') + N'))' + NCHAR(10)
+                      + N'                 AND grantee_principal_id = DATABASE_PRINCIPAL_ID(N' + dbo.fnQuoteLiteral(@LoginName) + N'))' + NCHAR(10)
                       + N'        REVOKE VIEW DEFINITION FROM ' + QUOTENAME(@LoginName) + N';' + NCHAR(10)
                     ELSE N'' END
                   + N'END';
@@ -970,16 +1087,16 @@ BEGIN
                 SET @SQL =
                     N'USE ' + QUOTENAME(@DbName) + N';' + NCHAR(10)
                   + N'IF NOT EXISTS (SELECT 1 FROM sys.database_principals' + NCHAR(10)
-                  + N'              WHERE name = N' + QUOTENAME(@LoginName, N'''') + N' AND type IN (''U'',''S'',''G''))' + NCHAR(10)
+                  + N'              WHERE name = N' + dbo.fnQuoteLiteral(@LoginName) + N' AND type IN (''U'',''S'',''G''))' + NCHAR(10)
                   + N'BEGIN' + NCHAR(10)
                   + N'    CREATE USER ' + QUOTENAME(@LoginName) + N' FOR LOGIN ' + QUOTENAME(@LoginName) + N';' + NCHAR(10)
                   + N'END' + NCHAR(10)
                   -- Фиксируем orphaned user (SID рассинхронизирован) — тот же фикс что в spProvisionUsers
                   + N'ELSE IF EXISTS (' + NCHAR(10)
                   + N'    SELECT 1 FROM sys.database_principals dp' + NCHAR(10)
-                  + N'    WHERE  dp.name = N' + QUOTENAME(@LoginName, N'''') + NCHAR(10)
-                  + N'      AND  dp.sid <> SUSER_SID(N' + QUOTENAME(@LoginName, N'''') + N')' + NCHAR(10)
-                  + N'      AND  SUSER_SID(N' + QUOTENAME(@LoginName, N'''') + N') IS NOT NULL' + NCHAR(10)
+                  + N'    WHERE  dp.name = N' + dbo.fnQuoteLiteral(@LoginName) + NCHAR(10)
+                  + N'      AND  dp.sid <> SUSER_SID(N' + dbo.fnQuoteLiteral(@LoginName) + N')' + NCHAR(10)
+                  + N'      AND  SUSER_SID(N' + dbo.fnQuoteLiteral(@LoginName) + N') IS NOT NULL' + NCHAR(10)
                   + N')' + NCHAR(10)
                   + N'BEGIN' + NCHAR(10)
                   + N'    ALTER USER ' + QUOTENAME(@LoginName) + N' WITH LOGIN = ' + QUOTENAME(@LoginName) + N';' + NCHAR(10)
@@ -1124,29 +1241,23 @@ DELETE FROM dbo.tDatabases WHERE DbName = 'OldService';
 SELECT * FROM dbo.tUserProvisioningList ORDER BY Category, LoginName;
 
 -- Начальное заполнение (идемпотентно — пропускает уже существующих):
+-- !! Не коммить сюда реальные email/логины и тем более пароли — это пример.
+--    Реальный seed держи отдельным незакоммиченным скриптом/секретом. !!
 INSERT INTO dbo.tUserProvisioningList (LoginName, LoginType, Category, Notes)
 SELECT v.LoginName, v.LoginType, v.Category, v.Notes
 FROM (VALUES
     -- DB Admin
-    ('iippolitov@powbee.ru',  'SQL', 'DB Admin',           NULL),
-    ('sippolitova@powbee.ru', 'SQL', 'DB Admin',           NULL),
-    ('dulich@powbee.ru',      'SQL', 'DB Admin',           NULL),
+    ('<login1>@example.com', 'SQL', 'DB Admin',           NULL),
+    ('<login2>@example.com', 'SQL', 'DB Admin',           NULL),
     -- Dev Team
-    ('aseleznev@powbee.ru',   'SQL', 'Dev Team',           NULL),
-    ('agavrilov@powbee.ru',   'SQL', 'Dev Team',           NULL),
-    ('amarenkov@powbee.ru',   'SQL', 'Dev Team',           NULL),
-    ('dklochkov@powbee.ru',   'SQL', 'Dev Team',           NULL),
-    ('rvorobyev@powbee.ru',   'SQL', 'Dev Team',           NULL),
+    ('<login3>@example.com', 'SQL', 'Dev Team',           NULL),
+    ('<login4>@example.com', 'SQL', 'Dev Team',           NULL),
     -- Data Engineer Team
-    ('omarkgraf@powbee.ru',   'SQL', 'Data Engineer Team', NULL),
-    ('ytirtsov@powbee.ru',    'SQL', 'Data Engineer Team', NULL),
-    ('dkorneev@powbee.ru',    'SQL', 'Data Engineer Team', NULL),
-    ('iyakovlev@powbee.ru',   'SQL', 'Data Engineer Team', NULL),
+    ('<login5>@example.com', 'SQL', 'Data Engineer Team', NULL),
     -- QA
-    ('vshuvaev@powbee.ru',    'SQL', 'QA',                 NULL),
-    ('mbardyuzhina@powbee.ru','SQL', 'QA',                 NULL),
+    ('<login6>@example.com', 'SQL', 'QA',                 NULL),
     -- Support Senior
-    ('akizilbashev@powbee.ru','SQL', 'Support Senior',     NULL)
+    ('<login7>@example.com', 'SQL', 'Support Senior',     NULL)
 ) AS v (LoginName, LoginType, Category, Notes)
 WHERE NOT EXISTS (
     SELECT 1 FROM dbo.tUserProvisioningList t
@@ -1155,20 +1266,25 @@ WHERE NOT EXISTS (
 
 -- !! ОБЯЗАТЕЛЬНО перед запуском spProvisionUsers задай пароли !!
 -- SQL-логин без пароля упадёт с ошибкой при создании.
+-- Пароль хранится в открытом виде только до первого успешного запуска —
+-- после CREATE LOGIN spProvisionUsers сам затирает SqlPassword в NULL.
 --
--- Вариант 1: задать каждому индивидуально
--- UPDATE dbo.tUserProvisioningList SET SqlPassword = N'P@ssw0rd_2024!' WHERE LoginName = 'iippolitov@powbee.ru';
--- UPDATE dbo.tUserProvisioningList SET SqlPassword = N'...' WHERE LoginName = 'sippolitova@powbee.ru';
+-- Вариант 1: задать каждому индивидуально (сгенерируй реальный пароль отдельно,
+-- не бери его из этого файла и не коммить):
+-- UPDATE dbo.tUserProvisioningList SET SqlPassword = N'<сгенерированный-пароль>' WHERE LoginName = '<login1>@example.com';
 -- ...
 --
 -- Вариант 2: временно поставить один пароль всем (потом сменить)
--- UPDATE dbo.tUserProvisioningList SET SqlPassword = N'Temp_P@ss_2024!' WHERE SqlPassword IS NULL;
+-- UPDATE dbo.tUserProvisioningList SET SqlPassword = N'<временный-пароль>' WHERE SqlPassword IS NULL;
 
 -- SQL-логин (сервисный аккаунт):
 INSERT INTO dbo.tUserProvisioningList (LoginName, LoginType, SqlPassword, Category, Notes) VALUES
-    ('svc_reporting', 'SQL', 'P@ssw0rd_Str0ng!1', 'Data Engineer Team', 'Аккаунт отчётов');
+    ('svc_reporting', 'SQL', '<сгенерированный-пароль>', 'Data Engineer Team', 'Аккаунт отчётов');
 
--- Деактивировать пользователя (не удалять, просто не трогать):
+-- Деактивировать пользователя (не удалять): логин будет отключён (ALTER LOGIN DISABLE),
+-- членство в sysadmin и роли/EXECUTE/VIEW DEFINITION во всех базах — отозваны
+-- при следующем прогоне spProvisionUsers. Данные из tUserProvisioningList не теряются,
+-- поэтому обратное включение (IsActive=1) восстановит доступ по матрице.
 UPDATE dbo.tUserProvisioningList SET IsActive = 0 WHERE LoginName = 'CORP\petrov.pp';
 
 
@@ -1198,17 +1314,17 @@ VALUES ('Data Engineer Team', 'crmExtra', 'db_owner', 'DE нужен owner дл�
 
 -- Личное исключение: конкретный юзер → Mindbox → writer
 INSERT INTO dbo.tPermissionOverride (LoginName, DbName, DbRoles, Notes)
-VALUES ('vshuvaev@powbee.ru', 'Mindbox', 'db_datareader|db_datawriter',
+VALUES ('<login6>@example.com', 'Mindbox', 'db_datareader|db_datawriter',
         'Временно выдан write для исследования инцидента');
 
 -- Деактивировать исключение (не удалять):
 UPDATE dbo.tPermissionOverride
 SET    IsActive = 0, UpdatedAt = SYSDATETIME()
-WHERE  LoginName = 'vshuvaev@powbee.ru' AND DbName = 'Mindbox';
+WHERE  LoginName = '<login6>@example.com' AND DbName = 'Mindbox';
 
 -- Удалить исключение насовсем:
 DELETE FROM dbo.tPermissionOverride
-WHERE  LoginName = 'vshuvaev@powbee.ru' AND DbName = 'Mindbox';
+WHERE  LoginName = '<login6>@example.com' AND DbName = 'Mindbox';
 
 
 -- ── Шаг 4: запуск ────────────────────────────────────────────────────
@@ -1257,7 +1373,7 @@ SELECT * FROM dbo.tUserProvisioningLog WHERE Status = 'ERROR' ORDER BY RunAt DES
 -- Что получил конкретный пользователь:
 SELECT Scope, Action, Status, Details
 FROM   dbo.tUserProvisioningLog
-WHERE  LoginName = 'vshuvaev@powbee.ru'
+WHERE  LoginName = '<login6>@example.com'
 ORDER  BY RunAt DESC;
 
 -- Очистить журнал:
