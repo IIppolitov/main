@@ -464,6 +464,15 @@ BEGIN
         @HasOwner     BIT,             -- должен ли быть db_owner в этой базе
         @HasReader    BIT,             -- должен ли быть db_datareader
         @HasWriter    BIT,             -- должен ли быть db_datawriter
+        @StateSQL     NVARCHAR(MAX),   -- запрос фактического состояния в целевой базе
+        @UserExists   BIT,             -- есть ли уже database-принципал для логина
+        @IsOrphaned   BIT,             -- orphaned user (SID не совпадает с логином)
+        @ActualOwner  BIT,             -- фактическое членство в db_owner
+        @ActualReader BIT,             -- фактическое членство в db_datareader
+        @ActualWriter BIT,             -- фактическое членство в db_datawriter
+        @ActualExec   BIT,             -- фактически выдан ли EXECUTE
+        @ActualViewDef BIT,            -- фактически выдан ли VIEW DEFINITION
+        @NeedsChange  BIT,             -- отличается ли факт от желаемого состояния
         @LogStatus    NVARCHAR(20),
         @Prefix       NVARCHAR(10),
         @RunId        UNIQUEIDENTIFIER;
@@ -717,6 +726,58 @@ BEGIN
                 SET @HasReader = CASE WHEN CHARINDEX(N'|db_datareader|',  @PaddedRoles) > 0 THEN 1 ELSE 0 END;
                 SET @HasWriter = CASE WHEN CHARINDEX(N'|db_datawriter|',  @PaddedRoles) > 0 THEN 1 ELSE 0 END;
 
+                -- ══════════════════════════════════════════════════════
+                -- Сверяем желаемое состояние с фактическим ДО того как
+                -- что-либо строить/выполнять. Если всё уже совпадает —
+                -- ни исполнения, ни записи в лог не будет: иначе на
+                -- каждом прогоне по каждому юзеру x базе плодились бы
+                -- строки "PROVISION / OK", даже когда права давно выданы
+                -- и трогать нечего.
+                -- ══════════════════════════════════════════════════════
+                SET @UserExists = 0; SET @IsOrphaned = 0;
+                SET @ActualOwner = 0; SET @ActualReader = 0; SET @ActualWriter = 0;
+                SET @ActualExec = 0; SET @ActualViewDef = 0;
+
+                SET @StateSQL =
+                    N'USE ' + QUOTENAME(@DbName) + N';' + NCHAR(10)
+                  + N'SELECT' + NCHAR(10)
+                  + N'    @UserExists = CASE WHEN EXISTS (SELECT 1 FROM sys.database_principals' + NCHAR(10)
+                  + N'                       WHERE name = N' + dbo.fnQuoteLiteral(@LoginName) + N' AND type IN (''U'',''S'',''G'')) THEN 1 ELSE 0 END,' + NCHAR(10)
+                  + N'    @IsOrphaned = CASE WHEN EXISTS (SELECT 1 FROM sys.database_principals dp' + NCHAR(10)
+                  + N'                       WHERE dp.name = N' + dbo.fnQuoteLiteral(@LoginName) + NCHAR(10)
+                  + N'                         AND dp.sid <> SUSER_SID(N' + dbo.fnQuoteLiteral(@LoginName) + N')' + NCHAR(10)
+                  + N'                         AND SUSER_SID(N' + dbo.fnQuoteLiteral(@LoginName) + N') IS NOT NULL) THEN 1 ELSE 0 END,' + NCHAR(10)
+                  + N'    @ActualOwner  = ISNULL(IS_ROLEMEMBER(''db_owner'',      N' + dbo.fnQuoteLiteral(@LoginName) + N'), 0),' + NCHAR(10)
+                  + N'    @ActualReader = ISNULL(IS_ROLEMEMBER(''db_datareader'', N' + dbo.fnQuoteLiteral(@LoginName) + N'), 0),' + NCHAR(10)
+                  + N'    @ActualWriter = ISNULL(IS_ROLEMEMBER(''db_datawriter'', N' + dbo.fnQuoteLiteral(@LoginName) + N'), 0),' + NCHAR(10)
+                  + N'    @ActualExec = CASE WHEN EXISTS (SELECT 1 FROM sys.database_permissions' + NCHAR(10)
+                  + N'                       WHERE class = 0 AND state IN (''G'',''W'') AND permission_name = ''EXECUTE''' + NCHAR(10)
+                  + N'                         AND grantee_principal_id = DATABASE_PRINCIPAL_ID(N' + dbo.fnQuoteLiteral(@LoginName) + N')) THEN 1 ELSE 0 END,' + NCHAR(10)
+                  + N'    @ActualViewDef = CASE WHEN EXISTS (SELECT 1 FROM sys.database_permissions' + NCHAR(10)
+                  + N'                       WHERE class = 0 AND state IN (''G'',''W'') AND permission_name = ''VIEW DEFINITION''' + NCHAR(10)
+                  + N'                         AND grantee_principal_id = DATABASE_PRINCIPAL_ID(N' + dbo.fnQuoteLiteral(@LoginName) + N')) THEN 1 ELSE 0 END;';
+
+                EXEC sp_executesql @StateSQL,
+                    N'@UserExists BIT OUTPUT, @IsOrphaned BIT OUTPUT, @ActualOwner BIT OUTPUT, @ActualReader BIT OUTPUT, @ActualWriter BIT OUTPUT, @ActualExec BIT OUTPUT, @ActualViewDef BIT OUTPUT',
+                    @UserExists OUTPUT, @IsOrphaned OUTPUT, @ActualOwner OUTPUT, @ActualReader OUTPUT, @ActualWriter OUTPUT, @ActualExec OUTPUT, @ActualViewDef OUTPUT;
+
+                SET @NeedsChange = CASE WHEN
+                       (@IsUserActive = 1 AND @UserExists = 0)
+                    OR (@UserExists = 1 AND @IsOrphaned = 1)
+                    OR (@ActualOwner   <> @HasOwner)
+                    OR (@ActualReader  <> @HasReader)
+                    OR (@ActualWriter  <> @HasWriter)
+                    OR (@ActualExec    <> @GrantExec)
+                    OR (@ActualViewDef <> @GrantViewDef)
+                    THEN 1 ELSE 0 END;
+
+                IF @NeedsChange = 0
+                BEGIN
+                    PRINT @Prefix + N'  [=] ' + @DbName + N' (' + @DbType + N') -> уже соответствует желаемому состоянию, пропуск.';
+                    FETCH NEXT FROM cur_DB INTO @DbName, @IsDev;
+                    CONTINUE;
+                END
+
                 -- Строим @CleanupSQL: по каждому managed-объекту —
                 -- если НЕ должен быть, но вдруг есть → отзываем.
                 -- IS_ROLEMEMBER и EXISTS-check гарантируют идемпотентность:
@@ -941,6 +1002,15 @@ BEGIN
         @HasOwner     BIT,
         @HasReader    BIT,
         @HasWriter    BIT,
+        @StateSQL     NVARCHAR(MAX),
+        @UserExists   BIT,
+        @IsOrphaned   BIT,
+        @ActualOwner  BIT,
+        @ActualReader BIT,
+        @ActualWriter BIT,
+        @ActualExec   BIT,
+        @ActualViewDef BIT,
+        @NeedsChange  BIT,
         @LogStatus    NVARCHAR(20),
         @Prefix       NVARCHAR(10),
         @OwnRun       BIT = 0,
@@ -1042,91 +1112,136 @@ BEGIN
                 SET @HasReader = CASE WHEN CHARINDEX(N'|db_datareader|',  @PaddedRoles) > 0 THEN 1 ELSE 0 END;
                 SET @HasWriter = CASE WHEN CHARINDEX(N'|db_datawriter|',  @PaddedRoles) > 0 THEN 1 ELSE 0 END;
 
-                SET @CleanupSQL =
+                -- ── Сверяем желаемое состояние с фактическим (тот же приём, что
+                --    и в spProvisionUsers) — лог/выполнение только при реальном отличии ──
+                SET @UserExists = 0; SET @IsOrphaned = 0;
+                SET @ActualOwner = 0; SET @ActualReader = 0; SET @ActualWriter = 0;
+                SET @ActualExec = 0; SET @ActualViewDef = 0;
+
+                SET @StateSQL =
                     N'USE ' + QUOTENAME(@DbName) + N';' + NCHAR(10)
-                  + N'IF EXISTS (SELECT 1 FROM sys.database_principals' + NCHAR(10)
-                  + N'           WHERE name = N' + dbo.fnQuoteLiteral(@LoginName) + NCHAR(10)
-                  + N'             AND type IN (''U'',''S'',''G''))' + NCHAR(10)
-                  + N'BEGIN' + NCHAR(10)
-                  + CASE WHEN @HasOwner = 0 THEN
-                        N'    IF IS_ROLEMEMBER(''db_owner'', N' + dbo.fnQuoteLiteral(@LoginName) + N') = 1' + NCHAR(10)
-                      + N'        ALTER ROLE [db_owner] DROP MEMBER ' + QUOTENAME(@LoginName) + N';' + NCHAR(10)
-                    ELSE N'' END
-                  + CASE WHEN @HasReader = 0 THEN
-                        N'    IF IS_ROLEMEMBER(''db_datareader'', N' + dbo.fnQuoteLiteral(@LoginName) + N') = 1' + NCHAR(10)
-                      + N'        ALTER ROLE [db_datareader] DROP MEMBER ' + QUOTENAME(@LoginName) + N';' + NCHAR(10)
-                    ELSE N'' END
-                  + CASE WHEN @HasWriter = 0 THEN
-                        N'    IF IS_ROLEMEMBER(''db_datawriter'', N' + dbo.fnQuoteLiteral(@LoginName) + N') = 1' + NCHAR(10)
-                      + N'        ALTER ROLE [db_datawriter] DROP MEMBER ' + QUOTENAME(@LoginName) + N';' + NCHAR(10)
-                    ELSE N'' END
-                  + CASE WHEN @GrantExec = 0 THEN
-                        N'    IF EXISTS (SELECT 1 FROM sys.database_permissions' + NCHAR(10)
-                      + N'               WHERE class = 0 AND state IN (''G'',''W'') AND permission_name = ''EXECUTE''' + NCHAR(10)
-                      + N'                 AND grantee_principal_id = DATABASE_PRINCIPAL_ID(N' + dbo.fnQuoteLiteral(@LoginName) + N'))' + NCHAR(10)
-                      + N'        REVOKE EXECUTE FROM ' + QUOTENAME(@LoginName) + N';' + NCHAR(10)
-                    ELSE N'' END
-                  + CASE WHEN @GrantViewDef = 0 THEN
-                        N'    IF EXISTS (SELECT 1 FROM sys.database_permissions' + NCHAR(10)
-                      + N'               WHERE class = 0 AND state IN (''G'',''W'') AND permission_name = ''VIEW DEFINITION''' + NCHAR(10)
-                      + N'                 AND grantee_principal_id = DATABASE_PRINCIPAL_ID(N' + dbo.fnQuoteLiteral(@LoginName) + N'))' + NCHAR(10)
-                      + N'        REVOKE VIEW DEFINITION FROM ' + QUOTENAME(@LoginName) + N';' + NCHAR(10)
-                    ELSE N'' END
-                  + N'END';
+                  + N'SELECT' + NCHAR(10)
+                  + N'    @UserExists = CASE WHEN EXISTS (SELECT 1 FROM sys.database_principals' + NCHAR(10)
+                  + N'                       WHERE name = N' + dbo.fnQuoteLiteral(@LoginName) + N' AND type IN (''U'',''S'',''G'')) THEN 1 ELSE 0 END,' + NCHAR(10)
+                  + N'    @IsOrphaned = CASE WHEN EXISTS (SELECT 1 FROM sys.database_principals dp' + NCHAR(10)
+                  + N'                       WHERE dp.name = N' + dbo.fnQuoteLiteral(@LoginName) + NCHAR(10)
+                  + N'                         AND dp.sid <> SUSER_SID(N' + dbo.fnQuoteLiteral(@LoginName) + N')' + NCHAR(10)
+                  + N'                         AND SUSER_SID(N' + dbo.fnQuoteLiteral(@LoginName) + N') IS NOT NULL) THEN 1 ELSE 0 END,' + NCHAR(10)
+                  + N'    @ActualOwner  = ISNULL(IS_ROLEMEMBER(''db_owner'',      N' + dbo.fnQuoteLiteral(@LoginName) + N'), 0),' + NCHAR(10)
+                  + N'    @ActualReader = ISNULL(IS_ROLEMEMBER(''db_datareader'', N' + dbo.fnQuoteLiteral(@LoginName) + N'), 0),' + NCHAR(10)
+                  + N'    @ActualWriter = ISNULL(IS_ROLEMEMBER(''db_datawriter'', N' + dbo.fnQuoteLiteral(@LoginName) + N'), 0),' + NCHAR(10)
+                  + N'    @ActualExec = CASE WHEN EXISTS (SELECT 1 FROM sys.database_permissions' + NCHAR(10)
+                  + N'                       WHERE class = 0 AND state IN (''G'',''W'') AND permission_name = ''EXECUTE''' + NCHAR(10)
+                  + N'                         AND grantee_principal_id = DATABASE_PRINCIPAL_ID(N' + dbo.fnQuoteLiteral(@LoginName) + N')) THEN 1 ELSE 0 END,' + NCHAR(10)
+                  + N'    @ActualViewDef = CASE WHEN EXISTS (SELECT 1 FROM sys.database_permissions' + NCHAR(10)
+                  + N'                       WHERE class = 0 AND state IN (''G'',''W'') AND permission_name = ''VIEW DEFINITION''' + NCHAR(10)
+                  + N'                         AND grantee_principal_id = DATABASE_PRINCIPAL_ID(N' + dbo.fnQuoteLiteral(@LoginName) + N')) THEN 1 ELSE 0 END;';
 
-                -- ── Grant SQL ─────────────────────────────────────────
-                SET @RoleSQL = N'';
-                SELECT @RoleSQL += N'ALTER ROLE ' + QUOTENAME(LTRIM(RTRIM(value)))
-                                 + N' ADD MEMBER ' + QUOTENAME(@LoginName) + N';' + NCHAR(10)
-                FROM   STRING_SPLIT(@DbRoles, N'|')
-                WHERE  LTRIM(RTRIM(value)) <> N'';
+                EXEC sp_executesql @StateSQL,
+                    N'@UserExists BIT OUTPUT, @IsOrphaned BIT OUTPUT, @ActualOwner BIT OUTPUT, @ActualReader BIT OUTPUT, @ActualWriter BIT OUTPUT, @ActualExec BIT OUTPUT, @ActualViewDef BIT OUTPUT',
+                    @UserExists OUTPUT, @IsOrphaned OUTPUT, @ActualOwner OUTPUT, @ActualReader OUTPUT, @ActualWriter OUTPUT, @ActualExec OUTPUT, @ActualViewDef OUTPUT;
 
-                IF @GrantExec    = 1 SET @RoleSQL += N'GRANT EXECUTE TO '        + QUOTENAME(@LoginName) + N';' + NCHAR(10);
-                IF @GrantViewDef = 1 SET @RoleSQL += N'GRANT VIEW DEFINITION TO ' + QUOTENAME(@LoginName) + N';';
+                SET @NeedsChange = CASE WHEN
+                       (@UserExists = 0)
+                    OR (@UserExists = 1 AND @IsOrphaned = 1)
+                    OR (@ActualOwner   <> @HasOwner)
+                    OR (@ActualReader  <> @HasReader)
+                    OR (@ActualWriter  <> @HasWriter)
+                    OR (@ActualExec    <> @GrantExec)
+                    OR (@ActualViewDef <> @GrantViewDef)
+                    THEN 1 ELSE 0 END;
 
-                SET @SQL =
-                    N'USE ' + QUOTENAME(@DbName) + N';' + NCHAR(10)
-                  + N'IF NOT EXISTS (SELECT 1 FROM sys.database_principals' + NCHAR(10)
-                  + N'              WHERE name = N' + dbo.fnQuoteLiteral(@LoginName) + N' AND type IN (''U'',''S'',''G''))' + NCHAR(10)
-                  + N'BEGIN' + NCHAR(10)
-                  + N'    CREATE USER ' + QUOTENAME(@LoginName) + N' FOR LOGIN ' + QUOTENAME(@LoginName) + N';' + NCHAR(10)
-                  + N'END' + NCHAR(10)
-                  -- Фиксируем orphaned user (SID рассинхронизирован) — тот же фикс что в spProvisionUsers
-                  + N'ELSE IF EXISTS (' + NCHAR(10)
-                  + N'    SELECT 1 FROM sys.database_principals dp' + NCHAR(10)
-                  + N'    WHERE  dp.name = N' + dbo.fnQuoteLiteral(@LoginName) + NCHAR(10)
-                  + N'      AND  dp.sid <> SUSER_SID(N' + dbo.fnQuoteLiteral(@LoginName) + N')' + NCHAR(10)
-                  + N'      AND  SUSER_SID(N' + dbo.fnQuoteLiteral(@LoginName) + N') IS NOT NULL' + NCHAR(10)
-                  + N')' + NCHAR(10)
-                  + N'BEGIN' + NCHAR(10)
-                  + N'    ALTER USER ' + QUOTENAME(@LoginName) + N' WITH LOGIN = ' + QUOTENAME(@LoginName) + N';' + NCHAR(10)
-                  + N'END' + NCHAR(10)
-                  + @RoleSQL;
-
-                IF @DryRun = 0
+                IF @NeedsChange = 1
                 BEGIN
-                    EXEC sp_executesql @CleanupSQL;
-                    EXEC sp_executesql @SQL;
+                    SET @CleanupSQL =
+                        N'USE ' + QUOTENAME(@DbName) + N';' + NCHAR(10)
+                      + N'IF EXISTS (SELECT 1 FROM sys.database_principals' + NCHAR(10)
+                      + N'           WHERE name = N' + dbo.fnQuoteLiteral(@LoginName) + NCHAR(10)
+                      + N'             AND type IN (''U'',''S'',''G''))' + NCHAR(10)
+                      + N'BEGIN' + NCHAR(10)
+                      + CASE WHEN @HasOwner = 0 THEN
+                            N'    IF IS_ROLEMEMBER(''db_owner'', N' + dbo.fnQuoteLiteral(@LoginName) + N') = 1' + NCHAR(10)
+                          + N'        ALTER ROLE [db_owner] DROP MEMBER ' + QUOTENAME(@LoginName) + N';' + NCHAR(10)
+                        ELSE N'' END
+                      + CASE WHEN @HasReader = 0 THEN
+                            N'    IF IS_ROLEMEMBER(''db_datareader'', N' + dbo.fnQuoteLiteral(@LoginName) + N') = 1' + NCHAR(10)
+                          + N'        ALTER ROLE [db_datareader] DROP MEMBER ' + QUOTENAME(@LoginName) + N';' + NCHAR(10)
+                        ELSE N'' END
+                      + CASE WHEN @HasWriter = 0 THEN
+                            N'    IF IS_ROLEMEMBER(''db_datawriter'', N' + dbo.fnQuoteLiteral(@LoginName) + N') = 1' + NCHAR(10)
+                          + N'        ALTER ROLE [db_datawriter] DROP MEMBER ' + QUOTENAME(@LoginName) + N';' + NCHAR(10)
+                        ELSE N'' END
+                      + CASE WHEN @GrantExec = 0 THEN
+                            N'    IF EXISTS (SELECT 1 FROM sys.database_permissions' + NCHAR(10)
+                          + N'               WHERE class = 0 AND state IN (''G'',''W'') AND permission_name = ''EXECUTE''' + NCHAR(10)
+                          + N'                 AND grantee_principal_id = DATABASE_PRINCIPAL_ID(N' + dbo.fnQuoteLiteral(@LoginName) + N'))' + NCHAR(10)
+                          + N'        REVOKE EXECUTE FROM ' + QUOTENAME(@LoginName) + N';' + NCHAR(10)
+                        ELSE N'' END
+                      + CASE WHEN @GrantViewDef = 0 THEN
+                            N'    IF EXISTS (SELECT 1 FROM sys.database_permissions' + NCHAR(10)
+                          + N'               WHERE class = 0 AND state IN (''G'',''W'') AND permission_name = ''VIEW DEFINITION''' + NCHAR(10)
+                          + N'                 AND grantee_principal_id = DATABASE_PRINCIPAL_ID(N' + dbo.fnQuoteLiteral(@LoginName) + N'))' + NCHAR(10)
+                          + N'        REVOKE VIEW DEFINITION FROM ' + QUOTENAME(@LoginName) + N';' + NCHAR(10)
+                        ELSE N'' END
+                      + N'END';
+
+                    -- ── Grant SQL ─────────────────────────────────────────
+                    SET @RoleSQL = N'';
+                    SELECT @RoleSQL += N'ALTER ROLE ' + QUOTENAME(LTRIM(RTRIM(value)))
+                                     + N' ADD MEMBER ' + QUOTENAME(@LoginName) + N';' + NCHAR(10)
+                    FROM   STRING_SPLIT(@DbRoles, N'|')
+                    WHERE  LTRIM(RTRIM(value)) <> N'';
+
+                    IF @GrantExec    = 1 SET @RoleSQL += N'GRANT EXECUTE TO '        + QUOTENAME(@LoginName) + N';' + NCHAR(10);
+                    IF @GrantViewDef = 1 SET @RoleSQL += N'GRANT VIEW DEFINITION TO ' + QUOTENAME(@LoginName) + N';';
+
+                    SET @SQL =
+                        N'USE ' + QUOTENAME(@DbName) + N';' + NCHAR(10)
+                      + N'IF NOT EXISTS (SELECT 1 FROM sys.database_principals' + NCHAR(10)
+                      + N'              WHERE name = N' + dbo.fnQuoteLiteral(@LoginName) + N' AND type IN (''U'',''S'',''G''))' + NCHAR(10)
+                      + N'BEGIN' + NCHAR(10)
+                      + N'    CREATE USER ' + QUOTENAME(@LoginName) + N' FOR LOGIN ' + QUOTENAME(@LoginName) + N';' + NCHAR(10)
+                      + N'END' + NCHAR(10)
+                      -- Фиксируем orphaned user (SID рассинхронизирован) — тот же фикс что в spProvisionUsers
+                      + N'ELSE IF EXISTS (' + NCHAR(10)
+                      + N'    SELECT 1 FROM sys.database_principals dp' + NCHAR(10)
+                      + N'    WHERE  dp.name = N' + dbo.fnQuoteLiteral(@LoginName) + NCHAR(10)
+                      + N'      AND  dp.sid <> SUSER_SID(N' + dbo.fnQuoteLiteral(@LoginName) + N')' + NCHAR(10)
+                      + N'      AND  SUSER_SID(N' + dbo.fnQuoteLiteral(@LoginName) + N') IS NOT NULL' + NCHAR(10)
+                      + N')' + NCHAR(10)
+                      + N'BEGIN' + NCHAR(10)
+                      + N'    ALTER USER ' + QUOTENAME(@LoginName) + N' WITH LOGIN = ' + QUOTENAME(@LoginName) + N';' + NCHAR(10)
+                      + N'END' + NCHAR(10)
+                      + @RoleSQL;
+
+                    IF @DryRun = 0
+                    BEGIN
+                        EXEC sp_executesql @CleanupSQL;
+                        EXEC sp_executesql @SQL;
+                    END
+                    ELSE
+                    BEGIN
+                        PRINT N'    [CLEANUP] ' + @CleanupSQL;
+                        PRINT N'    [GRANT]   ' + @SQL;
+                    END
+
+                    SET @LogStatus = CASE WHEN @DryRun = 1 THEN N'DRY_RUN' ELSE N'OK' END;
+                    INSERT INTO dbo.tUserProvisioningLog (RunId, LoginName, Scope, Action, Status, Details)
+                    VALUES (@RunId, @LoginName, @DbName, N'OVERRIDE', @LogStatus,
+                            N'Type='     + @OverrideType
+                            + N' | Roles='   + ISNULL(@DbRoles, N'')
+                            + N' | Exec='    + CAST(@GrantExec    AS NCHAR(1))
+                            + N' | ViewDef=' + CAST(@GrantViewDef AS NCHAR(1)));
+
+                    PRINT @Prefix + N'  [v] [' + @OverrideType + N'] '
+                        + @LoginName + N' → ' + @DbName
+                        + N': ' + ISNULL(@DbRoles, N'—')
+                        + CASE WHEN @GrantExec    = 1 THEN N' + EXECUTE'         ELSE N'' END
+                        + CASE WHEN @GrantViewDef = 1 THEN N' + VIEW DEFINITION' ELSE N'' END;
                 END
                 ELSE
-                BEGIN
-                    PRINT N'    [CLEANUP] ' + @CleanupSQL;
-                    PRINT N'    [GRANT]   ' + @SQL;
-                END
-
-                SET @LogStatus = CASE WHEN @DryRun = 1 THEN N'DRY_RUN' ELSE N'OK' END;
-                INSERT INTO dbo.tUserProvisioningLog (RunId, LoginName, Scope, Action, Status, Details)
-                VALUES (@RunId, @LoginName, @DbName, N'OVERRIDE', @LogStatus,
-                        N'Type='     + @OverrideType
-                        + N' | Roles='   + ISNULL(@DbRoles, N'')
-                        + N' | Exec='    + CAST(@GrantExec    AS NCHAR(1))
-                        + N' | ViewDef=' + CAST(@GrantViewDef AS NCHAR(1)));
-
-                PRINT @Prefix + N'  [v] [' + @OverrideType + N'] '
-                    + @LoginName + N' → ' + @DbName
-                    + N': ' + ISNULL(@DbRoles, N'—')
-                    + CASE WHEN @GrantExec    = 1 THEN N' + EXECUTE'         ELSE N'' END
-                    + CASE WHEN @GrantViewDef = 1 THEN N' + VIEW DEFINITION' ELSE N'' END;
+                    PRINT @Prefix + N'  [=] [' + @OverrideType + N'] '
+                        + @LoginName + N' → ' + @DbName + N' -> уже соответствует, пропуск.';
 
             END TRY
             BEGIN CATCH
