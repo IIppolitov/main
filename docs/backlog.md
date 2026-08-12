@@ -96,7 +96,7 @@
 
 ## Claude Code в командах разработки
 
-Инструкции — [regulations/claude-code-osnovy.md](regulations/claude-code-osnovy.md)
+Инструкции — [regulations/claude-code/](regulations/claude-code/): общие основы
 и два документа по командам. Выдаём инструмент всем разработчикам админки и приложения.
 
 | # | Что | Почему важно | Приоритет |

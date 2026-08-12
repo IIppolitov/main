@@ -6,9 +6,7 @@
 |---|---|---|
 | [tracker-queues.md](tracker-queues.md) | Черновик, дописываем | **Здесь** |
 | [crm-lifecycle/](crm-lifecycle/) | Черновик, дописываем | **Здесь** |
-| [claude-code-osnovy.md](claude-code-osnovy.md) | Черновик, к выдаче командам | **Здесь** |
-| [claude-code-pbeadmin.md](claude-code-pbeadmin.md) | Черновик, к выдаче командам | **Здесь** |
-| [claude-code-pbeapp.md](claude-code-pbeapp.md) | Черновик, к выдаче командам | **Здесь** |
+| [claude-code/](claude-code/) | Черновик, к выдаче командам | **Здесь** |
 | [support-process.md](support-process.md) | Конспект утверждённого | В Вики |
 
 **Рабочие копии** (очереди Трекера и жизненный цикл задачи CRM) — не финальные,
@@ -22,11 +20,13 @@
 остальное — приёмы. Источник истины по коду и внутреннему процессу проекта остаётся
 в `CLAUDE.md` его репозитория — инструкции на него ссылаются, а не пересказывают.
 
+Указатель — [claude-code/README.md](claude-code/README.md).
+
 | Документ | Кому |
 |---|---|
-| [claude-code-osnovy.md](claude-code-osnovy.md) | всем: доступ, установка, ядро правил, работа с данными |
-| [claude-code-pbeadmin.md](claude-code-pbeadmin.md) | команде админки |
-| [claude-code-pbeapp.md](claude-code-pbeapp.md) | команде приложения |
+| [claude-code/osnovy.md](claude-code/osnovy.md) | всем: доступ, установка, ядро правил, работа с данными |
+| [claude-code/pbeadmin.md](claude-code/pbeadmin.md) | команде админки |
+| [claude-code/pbeapp.md](claude-code/pbeapp.md) | команде приложения |
 
 ## Жизненный цикл задачи CRM — 14 этапов
 
