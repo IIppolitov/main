@@ -1,0 +1,51 @@
+# Регламенты
+
+Два разных статуса документов — не путать.
+
+| Документ | Статус | Где ведём |
+|---|---|---|
+| [tracker-queues.md](tracker-queues.md) | Черновик, дописываем | **Здесь** |
+| [crm-lifecycle/](crm-lifecycle/) | Черновик, дописываем | **Здесь** |
+| [support-process.md](support-process.md) | Конспект утверждённого | В Вики |
+
+**Рабочие копии** (очереди Трекера и жизненный цикл задачи CRM) — не финальные,
+ответственный Ипполитов Иван, правим здесь и переносим в Вики.
+
+**Конспект** процесса техподдержки — регламент утверждён 07.08.2026, живёт в Вики,
+у нас только выжимка для памяти. Править его тут бессмысленно.
+
+## Жизненный цикл задачи CRM — 14 этапов
+
+Сводное описание — [crm-lifecycle/README.md](crm-lifecycle/README.md).
+
+| Этап | Ответственный |
+|---|---|
+| [1. Создание задачи](crm-lifecycle/01-sozdanie-zadachi.md) | КАМ клиента |
+| [2. Валидация](crm-lifecycle/02-validacija.md) | Product Owner |
+| [3. Бизнес-анализ](crm-lifecycle/03-biznes-analiz.md) | Команда БА |
+| [4. Согласование проработки](crm-lifecycle/04-soglasovanie-prorabotki.md) | КАМ |
+| [5. Оценка задачи](crm-lifecycle/05-ocenka-zadachi.md) | Релиз-менеджер, тимлиды |
+| [6. Согласование оценки](crm-lifecycle/06-soglasovanie-ocenki.md) | КАМ |
+| [7. Сбор задач в клиентские проекты](crm-lifecycle/07-sbor-v-proekty.md) | Релиз-менеджер |
+| [8. Набор спринтов](crm-lifecycle/08-nabor-sprintov.md) | Релиз-менеджер |
+| [9. Распределение задач между разработчиками](crm-lifecycle/09-raspredelenie-zadach.md) | Тимлиды |
+| [10. Разработка](crm-lifecycle/10-razrabotka.md) | Разработчики |
+| [11. Внутреннее тестирование и ревью](crm-lifecycle/11-testirovanie-i-revju.md) | QA, ревьюеры |
+| [12. Тестирование клиентом](crm-lifecycle/12-testirovanie-klientom.md) | КАМ, клиент |
+| [13. Релиз](crm-lifecycle/13-reliz.md) | Релиз-менеджер |
+| [14. Демонстрация заказчику](crm-lifecycle/14-demonstracija-zakazchiku.md) | КАМ |
+
+## Как обновлять копии из Вики
+
+```bash
+automation/scripts/wiki-page.sh <slug> --raw | jq -r .content \
+  | automation/scripts/wiki2md.py > docs/regulations/<файл>.md
+```
+
+Скрипт `wiki2md.py` переводит разметку Вики в чистый markdown: таблицы `#|`,
+выноски `{% note %}`, подчёркивания, картинки, якорные сноски.
+
+> ⚠️ Перезапись затрёт наши правки. Если документ уже дорабатывался здесь —
+> выгружай во временный файл и сличай, а не пиши поверх.
+
+Открытые вопросы по этим регламентам — в [../backlog.md](../backlog.md).
