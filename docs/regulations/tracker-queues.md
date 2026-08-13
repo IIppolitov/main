@@ -64,7 +64,7 @@
 | [CRM](https://tracker.yandex.ru/CRM) | Разработка CRM — админка и приложение. Внутри делится по компонентам и типам задач между командами | Ипполитов Иван | Отделы разработки |
 | [ANALYTIC](https://tracker.yandex.ru/ANALYTIC) | Запросы к дата-инженерам: выгрузки, загрузки, дэшборды. Функционал CRM не меняют | Маркграф Олег | [Дата-инженеры](../company/data-engineering.md) |
 | [DIGITAL](https://tracker.yandex.ru/DIGITAL) | Задачи Digital-отдела: презентации, рассылки, CLM | Яковлева Наталья | Digital |
-| [CONSOLE](https://tracker.yandex.ru/CONSOLE) | Задачи и пожелания по [pbeconsole](../projects/pbeconsole.md) | Ипполитов Иван | — |
+| [CONSOLE](https://tracker.yandex.ru/CONSOLE) | Задачи и пожелания по [pbeconsole](../systems/pbeconsole.md) | Ипполитов Иван | — |
 | [CYBERSEC](https://tracker.yandex.ru/CYBERSEC) | Информационная безопасность | Передельский Алексей | ИБ |
 
 **CONSOLE — вне регламента осознанно.** Это внутренняя разработка без

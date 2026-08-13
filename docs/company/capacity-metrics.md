@@ -11,7 +11,7 @@
 запрошенного измеримо сегодня, что измеримо после доработки консоли, а что не
 измеримо в принципе, пока не изменится процесс.
 
-Инструмент — раздел «Ресурсы и загрузка» в [pbeconsole](../projects/pbeconsole.md).
+Инструмент — раздел «Ресурсы и загрузка» в [pbeconsole](../systems/pbeconsole.md).
 Постановка: [pbeconsole/docs/specs/capacity-analytics.md](../../../pbeconsole/docs/specs/capacity-analytics.md).
 
 ---
