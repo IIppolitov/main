@@ -13,10 +13,11 @@
 #
 # Токен и ID организации (в порядке приоритета):
 #   1. переменные окружения YANDEX_WIKI_TOKEN / YANDEX_WIKI_ORG_ID
-#   2. macOS Keychain: сервисы yandex-wiki и yandex-wiki-org
-#   3. файл ~/.config/yandex-wiki/env (chmod 600)
-#   4. учётные данные Трекера (yandex-tracker / yandex-tracker-org) — организация
-#      та же, и если OAuth-приложение выдано со скоупом Вики, отдельный токен не нужен
+#   2. файл ~/.config/yandex-wiki/env (chmod 600)
+#   3. macOS Keychain: сервисы yandex-wiki и yandex-wiki-org
+#   4. учётные данные Трекера — файл ~/.config/yandex-tracker/env, затем Keychain
+#      yandex-tracker / yandex-tracker-org: организация та же, и если OAuth-приложение
+#      выдано со скоупом Вики, отдельный токен не нужен
 #
 # Токен в репозиторий не коммитится ни при каком раскладе — см. README.md рядом.
 #
@@ -70,6 +71,17 @@ if [[ -z "${YANDEX_WIKI_TOKEN:-}" || -z "${YANDEX_WIKI_ORG_ID:-}" ]]; then
   ENV_FILE="${YANDEX_WIKI_ENV_FILE:-$HOME/.config/yandex-wiki/env}"
   if [[ -f "$ENV_FILE" ]]; then
     set -a; . "$ENV_FILE"; set +a
+  fi
+fi
+
+# Трекерные креды тоже бывают в файле, а не только в Keychain — README предлагает
+# ~/.config/yandex-tracker/env как альтернативу. Без этого блока запасной вариант
+# ниже видит только переменные окружения и Keychain, и настроенный файлом Трекер
+# даёт код 3 «нет учётных данных».
+if [[ -z "${YANDEX_WIKI_TOKEN:-}" || -z "${YANDEX_WIKI_ORG_ID:-}" ]]; then
+  TRACKER_ENV_FILE="${YANDEX_TRACKER_ENV_FILE:-$HOME/.config/yandex-tracker/env}"
+  if [[ -f "$TRACKER_ENV_FILE" ]]; then
+    set -a; . "$TRACKER_ENV_FILE"; set +a
   fi
 fi
 

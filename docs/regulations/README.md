@@ -7,6 +7,7 @@
 | [tracker-queues.md](tracker-queues.md) | Черновик, дописываем | **Здесь** |
 | [crm-lifecycle/](crm-lifecycle/) | Черновик, дописываем | **Здесь** |
 | [claude-code/](claude-code/) | Черновик, к выдаче командам | **Здесь** |
+| [vpn/](vpn/) | Черновик, к выдаче командам | **Здесь** |
 | [support-process.md](support-process.md) | Конспект утверждённого | В Вики |
 
 **Рабочие копии** (очереди Трекера и жизненный цикл задачи CRM) — не финальные,
@@ -24,9 +25,16 @@
 
 | Документ | Кому |
 |---|---|
-| [claude-code/osnovy.md](claude-code/osnovy.md) | всем: доступ, установка, ядро правил, работа с данными |
+| [claude-code/osnovy.md](claude-code/osnovy.md) | всем: доступ, VPN, установка, ядро правил, работа с данными |
 | [claude-code/pbeadmin.md](claude-code/pbeadmin.md) | команде админки |
 | [claude-code/pbeapp.md](claude-code/pbeapp.md) | команде приложения |
+
+**VPN** — каталог [vpn/](vpn/), публикуется не в раздел Claude Code, а в
+[powbee/reglamenty/vpn](https://wiki.yandex.ru/powbee/reglamenty/vpn):
+[vpn/README.md](vpn/README.md) — сам раздел (как устроен доступ, кто выдаёт, общие правила),
+[vpn/happ.md](vpn/happ.md) — дочерняя страница с порядком настройки клиента. Клиент и правила
+роутинга нужны не только под Claude Code, поэтому основы на них ссылаются, а порядок настройки
+не дублируют.
 
 ## Жизненный цикл задачи CRM — 14 этапов
 

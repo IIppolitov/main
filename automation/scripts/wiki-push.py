@@ -37,7 +37,7 @@ WIKI_HOST = "https://wiki.yandex.ru"
 # остальное (бэклог, оргструктура, паспорта проектов) в Вики не ведут —
 # они разворачиваются в обычный текст, см. rewrite_links.
 KNOWN_DIRS = ["docs/regulations", "docs/regulations/crm-lifecycle",
-              "docs/regulations/claude-code"]
+              "docs/regulations/claude-code", "docs/regulations/vpn"]
 
 SLUG_RE = re.compile(r"https://wiki\.yandex\.ru/([^\s)\]]+)")
 H1_RE = re.compile(r"^#\s+(.+?)\s*$")
