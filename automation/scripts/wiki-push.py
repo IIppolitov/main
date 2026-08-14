@@ -36,7 +36,8 @@ WIKI_HOST = "https://wiki.yandex.ru"
 # Где искать документы, у которых есть страница в Вики. Ссылки на всё
 # остальное (бэклог, оргструктура, паспорта проектов) в Вики не ведут —
 # они разворачиваются в обычный текст, см. rewrite_links.
-KNOWN_DIRS = ["docs/regulations", "docs/regulations/crm-lifecycle"]
+KNOWN_DIRS = ["docs/regulations", "docs/regulations/crm-lifecycle",
+              "docs/regulations/claude-code"]
 
 SLUG_RE = re.compile(r"https://wiki\.yandex\.ru/([^\s)\]]+)")
 H1_RE = re.compile(r"^#\s+(.+?)\s*$")
