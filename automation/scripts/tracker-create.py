@@ -134,8 +134,8 @@ PRESETS: dict[str, dict] = {
         "queue": "CRM",
         "type": "documentation",        # Документация
         "components": [],
-        "tags": [],
-        "prefix": None,
+        "tags": ["PBE"],
+        "prefix": "PBE.",
     },
     "crm-dizayn": {
         "queue": "CRM",
@@ -332,6 +332,10 @@ def main() -> int:
                          "Не указана — оба поля остаются пустыми")
     ap.add_argument("--assignee", metavar="LOGIN",
                     help="исполнитель. Не указан — задача остаётся без исполнителя")
+    ap.add_argument("--tag", action="append", metavar="МНЕМОНИКА", default=[],
+                    help="дополнительный тег к тегам пресета; ключ можно "
+                         "повторить. Мнемоника клиента живёт здесь, а не в "
+                         "пресете: пресет один на все клиенты")
     ap.add_argument("--parent", metavar="CRM-1234",
                     help="родительская задача: создаётся подзадачей. "
                          "Ключ проверяется до создания")
@@ -398,8 +402,9 @@ def main() -> int:
     }
     if components:
         payload["components"] = components
-    if preset["tags"]:
-        payload["tags"] = preset["tags"]
+    tags = list(preset["tags"]) + [t for t in args.tag if t not in preset["tags"]]
+    if tags:
+        payload["tags"] = tags
     if estimate:
         payload["estimation"] = estimate
         payload["originalEstimation"] = estimate
@@ -414,7 +419,7 @@ def main() -> int:
     print(f"  очередь:     {preset['queue']}")
     print(f"  тип:         {preset['type']}")
     print(f"  компонент:   {', '.join(preset['components']) or '—'}")
-    print(f"  теги:        {', '.join(preset['tags']) or '—'}")
+    print(f"  теги:        {', '.join(tags) or '—'}")
     print(f"  название:    {summary}")
     print(f"  описание:    {len(description)} символов, "
           f"{description.count(chr(10)) + 1} строк")
