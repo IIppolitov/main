@@ -18,6 +18,13 @@
     ./tracker-create.py pbeapp     задача.md --estimate 4h --apply
     ./tracker-create.py pbeconsole задача.md --assignee iippolitov --apply
 
+Подзадачи заводятся теми же пресетами плюс --parent: родитель задаёт связь,
+пресет — очередь, тип и компонент.
+
+    ./tracker-create.py crm-razrabotka-admin  задача.md --parent CRM-1121 --apply
+    ./tracker-create.py crm-testirovanie      задача.md --parent CRM-1121 --apply
+    ./tracker-create.py crm-reliz             задача.md --parent CRM-1121 --apply
+
 Оценка одна на два поля: Трекер хранит «Оценку» и «Первоначальную оценку»
 отдельно, а в отчётах по спринту нужны обе. Не указана — не заполняется
 ни одна: пустая оценка это открытый вопрос, а не ноль.
@@ -62,6 +69,77 @@ PRESETS: dict[str, dict] = {
     "pbeconsole": {
         "queue": "CONSOLE",
         "type": "improvement",          # Улучшение
+        "components": [],
+        "tags": [],
+        "prefix": None,
+    },
+
+    # Подзадачи этапов жизненного цикла задачи CRM. Отличаются от пресетов
+    # выше тем, что почти всегда идут с --parent: сами по себе они не живут.
+    # Префикса нет: название подзадачи читается в контексте родителя, и
+    # мнемонику в него добавляет тот, кто заводит.
+    "crm-razrabotka-admin": {
+        "queue": "CRM",
+        "type": "development",          # Разработка
+        "components": ["Администрирование"],
+        "tags": [],
+        "prefix": None,
+    },
+    "crm-razrabotka-app": {
+        "queue": "CRM",
+        "type": "development",          # Разработка
+        "components": ["Приложение"],
+        "tags": [],
+        "prefix": None,
+    },
+    # Работы дата-инженеров живут в своей очереди, а не в CRM: там же вся
+    # остальная работа по данным клиентов. Типов «Разработка» в ANALYTIC нет —
+    # только «Задача» и «Ошибка», поэтому тип здесь task, и это не упущение.
+    "analytic-razrabotka": {
+        "queue": "ANALYTIC",
+        "type": "task",                 # Задача
+        "components": ["Аналитика данных"],
+        "tags": [],
+        "prefix": None,
+    },
+    "crm-testirovanie": {
+        "queue": "CRM",
+        "type": "testing",              # Тестирование
+        "components": [],
+        "tags": [],
+        "prefix": None,
+    },
+    "crm-reliz": {
+        "queue": "CRM",
+        "type": "release",              # Релиз
+        "components": [],
+        "tags": [],
+        "prefix": None,
+    },
+    "crm-ba": {
+        "queue": "CRM",
+        "type": "businessanalysis",     # Бизнес-анализ
+        "components": ["Бизнес анализ"],
+        "tags": [],
+        "prefix": None,
+    },
+    "crm-konsultaciya": {
+        "queue": "CRM",
+        "type": "consultation",         # Консультация
+        "components": [],
+        "tags": [],
+        "prefix": None,
+    },
+    "crm-dokumentaciya": {
+        "queue": "CRM",
+        "type": "documentation",        # Документация
+        "components": [],
+        "tags": [],
+        "prefix": None,
+    },
+    "crm-dizayn": {
+        "queue": "CRM",
+        "type": "design",               # Дизайн
         "components": [],
         "tags": [],
         "prefix": None,
@@ -221,6 +299,12 @@ class Tracker:
                 return candidate
         return None
 
+    def issue(self, key: str) -> dict | None:
+        """Родитель до создания подзадачи: опечатка в ключе иначе всплывёт
+        уже после того, как задача заведена не туда."""
+        code, body = self._call("GET", f"{API}/issues/{key}")
+        return body if code == 200 and isinstance(body, dict) else None
+
     def find_by_summary(self, queue: str, summary: str) -> list[str]:
         """Задача с таким же названием в очереди — защита от дубля при
         повторном прогоне: скрипт запускают дважды чаще, чем кажется."""
@@ -248,6 +332,9 @@ def main() -> int:
                          "Не указана — оба поля остаются пустыми")
     ap.add_argument("--assignee", metavar="LOGIN",
                     help="исполнитель. Не указан — задача остаётся без исполнителя")
+    ap.add_argument("--parent", metavar="CRM-1234",
+                    help="родительская задача: создаётся подзадачей. "
+                         "Ключ проверяется до создания")
     ap.add_argument("--apply", action="store_true",
                     help="создать задачу (по умолчанию — сухой прогон)")
     ap.add_argument("--force", action="store_true",
@@ -282,6 +369,19 @@ def main() -> int:
         print(f"✗ {e}", file=sys.stderr)
         return 1
 
+    parent = None
+    if args.parent:
+        parent = args.parent.strip().upper()
+        if not re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", parent):
+            print(f"✗ «{args.parent}» не похоже на ключ задачи. "
+                  f"Формат: CRM-1234", file=sys.stderr)
+            return 2
+        parent_issue = tracker.issue(parent)
+        if not parent_issue:
+            print(f"✗ в Трекере нет задачи {parent} — родителя не существует "
+                  f"или нет доступа", file=sys.stderr)
+            return 1
+
     assignee = None
     if args.assignee:
         assignee = tracker.resolve_user(args.assignee)
@@ -305,6 +405,8 @@ def main() -> int:
         payload["originalEstimation"] = estimate
     if assignee:
         payload["assignee"] = assignee
+    if parent:
+        payload["parent"] = parent
 
     duplicates = tracker.find_by_summary(preset["queue"], summary)
 
@@ -318,6 +420,9 @@ def main() -> int:
           f"{description.count(chr(10)) + 1} строк")
     print(f"  оценка:      {estimate or '— (не заполняется)'}")
     print(f"  исполнитель: {assignee or '— (не назначается)'}")
+    if parent:
+        print(f"  родитель:    {parent} — "
+              f"{parent_issue.get('summary', '?')}")
     if duplicates:
         print(f"  ⚠️ уже есть с таким названием: {', '.join(duplicates)}")
     print()
