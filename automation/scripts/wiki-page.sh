@@ -5,9 +5,12 @@
 #   wiki-page.sh homepage/klienty/valenta/trebovanija/registr
 #   wiki-page.sh https://wiki.yandex.ru/homepage/klienty/valenta/trebovanija/registr
 #   wiki-page.sh slug-1 slug-2                  # несколько страниц за вызов
+#   wiki-page.sh <slug> --comments              # + комментарии к странице
 #   wiki-page.sh <slug> --raw                   # сырой JSON вместо markdown
 #
 # Несколько страниц выгружаются в один поток, разделитель — строка `---`.
+# Комментарии по умолчанию не выгружаются: они нужны редко, а это второй запрос
+# на каждую страницу. С `--raw` уходят в поле `comments` того же JSON.
 # Принимает и slug, и ссылку: схема, домен, ?query и #якорь отбрасываются,
 # %-кодировка (кириллица в ссылке из браузера) раскодируется.
 #
@@ -28,12 +31,15 @@ set -uo pipefail
 
 API="https://api.wiki.yandex.net/v1"
 RAW=0
+WITH_COMMENTS=0
 ARGS=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --raw)      RAW=1; shift ;;
-    -h|--help)  sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --raw)       RAW=1; shift ;;
+    --comments)  WITH_COMMENTS=1; shift ;;
+    # Справка — шапка файла до первой некомментарной строки: не съедет при правках.
+    -h|--help)  awk 'NR>1 && /^#/ { sub(/^# ?/, ""); print; next } NR>1 { exit }' "$0"; exit 0 ;;
     -*)         echo "Неизвестный флаг: $1" >&2; exit 2 ;;
     *)          ARGS+=("$1"); shift ;;
   esac
@@ -153,6 +159,77 @@ fetch_page() {
   return 1
 }
 
+# --- комментарии ---------------------------------------------------------------
+# Комментарии живут отдельной ручкой: /pages/{id}/comments. Ответ страничный —
+# идём по next_cursor, пока он не опустеет. Если Яндекс когда-нибудь перестанет
+# понимать параметр cursor, курсор вернётся тем же — тогда выходим, а не крутим
+# один и тот же ответ вечно.
+fetch_comments() {
+  local page_id="$1" cursor="" prev_cursor="" all='[]' resp code body guard=0
+  local -a q
+
+  while :; do
+    q=(--data-urlencode "page_size=100")
+    [[ -n "$cursor" ]] && q+=(--data-urlencode "cursor=${cursor}")
+
+    resp="$(curl -sS -w $'\n%{http_code}' --get \
+      -H "Authorization: OAuth ${YANDEX_WIKI_TOKEN}" \
+      -H "X-Org-Id: ${YANDEX_WIKI_ORG_ID}" \
+      -H "Accept: application/json" \
+      "${q[@]}" \
+      "${API}/pages/${page_id}/comments")" || {
+        echo "Сеть недоступна при запросе комментариев страницы ${page_id}." >&2
+        return 1
+      }
+
+    code="${resp##*$'\n'}"
+    body="${resp%$'\n'*}"
+
+    if [[ "$code" != "200" ]]; then
+      echo "HTTP $code при запросе комментариев страницы ${page_id}." >&2
+      [[ "$all" == "[]" ]] && return 1
+      echo "Часть комментариев не выгружена — ниже неполный список." >&2
+      break
+    fi
+
+    all="$(jq -c --argjson acc "$all" '$acc + (.results // [])' <<<"$body")" || return 1
+
+    prev_cursor="$cursor"
+    cursor="$(jq -r '.next_cursor // ""' <<<"$body")"
+    guard=$((guard + 1))
+    [[ -z "$cursor" || "$cursor" == "null" || "$cursor" == "$prev_cursor" || $guard -ge 50 ]] && break
+  done
+
+  printf '%s' "$all"
+}
+
+# Комментарий привязан к куску текста (inline_text) и адресуется якорем
+# #comment-<id> — с ним ссылка из выгрузки открывает то же место, что и в Вике.
+render_comments() {
+  local slug="$1" json="$2"
+
+  jq -r --arg slug "$slug" '
+    [ .[] | select(.is_deleted != true) ] as $c
+    | "## Комментарии (\($c | length))",
+      "",
+      ( if ($c | length) == 0 then "_(нет)_"
+        else
+          ( $c[]
+            | (.author // {}) as $u
+            | "### \($u.display_name // $u.username // "?")\(if $u.is_dismissed then " (уволен)" else "" end) — \(.created_at // "?")",
+              "",
+              "https://wiki.yandex.ru/\($slug)/#comment-\(.id)",
+              "",
+              ( if .parent_id then "Ответ на комментарий #\(.parent_id).\n" else empty end),
+              ( if (.inline_text // "") != "" then "К тексту: «\(.inline_text)»\n" else empty end),
+              ( if .resolve_status == "resolved" then "Статус: решён\n" else empty end),
+              (.body // ""),
+              ""
+          )
+        end )
+  ' <<<"$json"
+}
+
 # --- дедупликация --------------------------------------------------------------
 SEEN=" "
 is_seen()   { [[ "$SEEN" == *" $1 "* ]]; }
@@ -162,12 +239,24 @@ PRINTED=0
 DUMPED=0
 
 dump_page() {
-  local SLUG="$1" JSON
+  local SLUG="$1" JSON PAGE_ID COMMENTS
 
   JSON="$(fetch_page "$SLUG")" || {
     echo "‼️ $SLUG — выгрузить не удалось (причина выше в stderr)."
     return 1
   }
+
+  COMMENTS=""
+  if [[ "$WITH_COMMENTS" -eq 1 ]]; then
+    PAGE_ID="$(jq -r '
+      (if type == "array" then .[0] elif has("results") then (.results[0] // {}) else . end)
+      | .id // empty' <<<"$JSON")"
+    if [[ -n "$PAGE_ID" ]]; then
+      COMMENTS="$(fetch_comments "$PAGE_ID")" || COMMENTS=""
+    else
+      echo "Не нашёл id страницы '$SLUG' — комментарии не выгружены." >&2
+    fi
+  fi
 
   if [[ "$PRINTED" -eq 1 ]]; then
     printf '\n---\n\n'
@@ -175,7 +264,12 @@ dump_page() {
   PRINTED=1
 
   if [[ "$RAW" -eq 1 ]]; then
-    jq '.' <<<"$JSON"
+    if [[ "$WITH_COMMENTS" -eq 1 ]]; then
+      jq --argjson c "${COMMENTS:-null}" \
+        'if type == "object" then . + {comments: $c} else {page: ., comments: $c} end' <<<"$JSON"
+    else
+      jq '.' <<<"$JSON"
+    fi
     DUMPED=$((DUMPED + 1))
     return 0
   fi
@@ -211,6 +305,15 @@ dump_page() {
            "\n\nЗапусти с `--raw`, чтобы посмотреть ответ целиком."
          end)
   ' <<<"$JSON"
+
+  if [[ "$WITH_COMMENTS" -eq 1 ]]; then
+    printf '\n'
+    if [[ -n "$COMMENTS" ]]; then
+      render_comments "$SLUG" "$COMMENTS"
+    else
+      printf '## Комментарии\n\n_(выгрузить не удалось — причина выше в stderr)_\n'
+    fi
+  fi
 
   DUMPED=$((DUMPED + 1))
   return 0

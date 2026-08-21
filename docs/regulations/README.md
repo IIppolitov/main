@@ -42,20 +42,20 @@
 
 | Этап | Ответственный |
 |---|---|
-| [1. Создание задачи](crm-lifecycle/01-sozdanie-zadachi.md) | КАМ клиента |
-| [2. Валидация](crm-lifecycle/02-validacija.md) | Product Owner |
+| [1. Создание задачи](crm-lifecycle/01-sozdanie-zadachi.md) | Менеджер клиента |
+| [2. Валидация](crm-lifecycle/02-validacija.md) | Владелец продукта |
 | [3. Бизнес-анализ](crm-lifecycle/03-biznes-analiz.md) | Команда БА |
-| [4. Согласование проработки](crm-lifecycle/04-soglasovanie-prorabotki.md) | КАМ |
+| [4. Согласование проработки](crm-lifecycle/04-soglasovanie-prorabotki.md) | Менеджер клиента |
 | [5. Оценка задачи](crm-lifecycle/05-ocenka-zadachi.md) | Релиз-менеджер, тимлиды |
-| [6. Согласование оценки](crm-lifecycle/06-soglasovanie-ocenki.md) | КАМ |
+| [6. Согласование оценки](crm-lifecycle/06-soglasovanie-ocenki.md) | Менеджер клиента |
 | [7. Сбор задач в клиентские проекты](crm-lifecycle/07-sbor-v-proekty.md) | Релиз-менеджер |
 | [8. Набор спринтов](crm-lifecycle/08-nabor-sprintov.md) | Релиз-менеджер |
 | [9. Распределение задач между разработчиками](crm-lifecycle/09-raspredelenie-zadach.md) | Тимлиды |
 | [10. Разработка](crm-lifecycle/10-razrabotka.md) | Разработчики |
-| [11. Внутреннее тестирование и ревью](crm-lifecycle/11-testirovanie-i-revju.md) | QA, ревьюеры |
-| [12. Тестирование клиентом](crm-lifecycle/12-testirovanie-klientom.md) | КАМ, клиент |
+| [11. Внутреннее тестирование и ревью](crm-lifecycle/11-testirovanie-i-revju.md) | Тестировщики, ревьюеры |
+| [12. Тестирование клиентом](crm-lifecycle/12-testirovanie-klientom.md) | Менеджер клиента, клиент |
 | [13. Релиз](crm-lifecycle/13-reliz.md) | Релиз-менеджер |
-| [14. Демонстрация заказчику](crm-lifecycle/14-demonstracija-zakazchiku.md) | КАМ |
+| [14. Демонстрация заказчику](crm-lifecycle/14-demonstracija-zakazchiku.md) | Менеджер клиента |
 
 **Срез по роли.** [Релиз-менеджер](../company/roles/release-manager.md) — те же
 этапы, собранные с одной точки зрения: что делать на каждом из девяти этапов, где
