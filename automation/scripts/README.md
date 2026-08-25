@@ -16,6 +16,7 @@
 | [`wiki2md.py`](wiki2md.py) | переводит разметку Вики в чистый markdown |
 | [`wiki-push.py`](wiki-push.py) | **публикует** наши markdown-документы обратно в Вики |
 | [`db-query.sh`](db-query.sh) | читает MSSQL под работу с агентом: только SELECT, без персональных данных |
+| [`db-profiles-init.sh`](db-profiles-init.sh) | **заводит** профили клиентов MSSQL в `~/.config/pbe-mssql/` — идемпотентно |
 | [`check-links.py`](check-links.py) | проверяет относительные ссылки во всех markdown-файлах |
 | [`md2rtf.py`](md2rtf.py) | переводит markdown в форматированный текст (RTF) для вставки в почту |
 
@@ -474,9 +475,9 @@ API отдаёт тело страницы только при явном зап
 
 ```bash
 ./db-query.sh --profiles                                   # список клиентов
-./db-query.sh --profile srv -Q "SELECT name FROM sys.databases ORDER BY name"
-./db-query.sh --profile srv -d crmAdmin -Q "SELECT TOP 5 Id FROM consents.tPersonConsent"
-./db-query.sh --profile srv -d crmAdmin -i sql/checks/mdlp-stock-diff.sql
+./db-query.sh --profile servier -Q "SELECT name FROM sys.databases ORDER BY name"
+./db-query.sh --profile servier -d crmAdmin -Q "SELECT TOP 5 Id FROM consents.tPersonConsent"
+./db-query.sh --profile servier -d crmAdmin -i sql/checks/mdlp-stock-diff.sql
 ```
 
 Обёртке принадлежат только длинные флаги — `--profile`, `--profiles`, `--help`.
@@ -536,6 +537,32 @@ sqlcmd -S <сервер> -d DBAProvisioning -i ../sql/DBAProvisioning/check-ai-a
 `--profile` обязателен и умолчания не имеет: серверов несколько, они выглядят
 одинаково, и запрос, ушедший не в тот, возвращает чужие цифры — правдоподобные
 и не те.
+
+#### Завести профили на новой машине
+
+Руками файлы не пишем — есть [`db-profiles-init.sh`](db-profiles-init.sh):
+
+```bash
+./db-profiles-init.sh --list                    # какие клиенты и серверы знает скрипт
+./db-profiles-init.sh --dry-run                 # что сделает, ничего не трогая
+./db-profiles-init.sh --user svc_ai_<фамилия>   # завести всё: common.env + профили клиентов
+security add-generic-password -s pbe-mssql -a "$USER" -w '<пароль>'
+```
+
+**Прогонять можно сколько угодно раз.** Профиль с тем же сервером не
+переписывается — только чинится `chmod 600`. Дублей не бывает: на клиента один
+файл, имя файла и есть ключ. Прочие строки профиля (`PBE_MSSQL_DB`, своя
+`PBE_MSSQL_USER`) сохраняются — правится ровно строка `PBE_MSSQL_SERVER`.
+
+Если в файле стоит **другой** сервер, скрипт его не трогает: печатает
+расхождение и выходит с кодом 1. Молча переписать нельзя — запрос уйдёт не в тот
+контур. Прав скрипт — прогнать с `--force`; прав файл — поправить список
+`PROFILES` в самом скрипте. Профили, которых в списке нет, скрипт не трогает
+и перечисляет отдельно.
+
+Список серверов живёт в скрипте, а не в этом README: одна копия, которую
+исполняет машина, вместо двух, которые расходятся. Новый клиент — строка
+в `PROFILES` и коммит.
 
 ### Платформы
 

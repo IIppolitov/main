@@ -117,8 +117,8 @@ Angular 18→22 / Capacitor 6→8 / NgModule→standalone. **Самостоят�
 симптомах `/pbe-bug` и `/pbe-task` смотрят в базу — по идентификатору из задачи:
 
 ```bash
-.claude/scripts/db-query.sh --profile srv -Q "SELECT name FROM sys.databases ORDER BY name"
-.claude/scripts/db-query.sh --profile srv -d crmAdmin -Q "SELECT TOP 20 Id, StatusId FROM consents.tPersonConsent WHERE PersonId = 483920"
+.claude/scripts/db-query.sh --profile servier -Q "SELECT name FROM sys.databases ORDER BY name"
+.claude/scripts/db-query.sh --profile servier -d crmAdmin -Q "SELECT TOP 20 Id, StatusId FROM consents.tPersonConsent WHERE PersonId = 483920"
 ```
 
 Обёртка подставляет сервер, логин и пароль — дальше обычный `sqlcmd`, флаги и SQL пишет
