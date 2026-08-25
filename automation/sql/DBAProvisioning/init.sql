@@ -1,7 +1,18 @@
 /*
 ========================================================================
-  USER PROVISIONING SYSTEM FOR MSSQL  — v6
+  USER PROVISIONING SYSTEM FOR MSSQL  — v7
   Безопасна для многократного запуска (Idempotent)
+
+  v7: предохранитель на окружение. @Env поднят в самое начало файла и
+    сверяется с тем, как выглядит сервер: если выбран 'QA', а ни одной
+    базы с суффиксом _dev на сервере нет — это боевой сервер, и скрипт
+    останавливается целиком (SET NOEXEC ON), не заводя ни базы, ни
+    объектов. Обратное сочетание ('PROD' на сервере с dev-базами) не
+    опасно — только предупреждение в выводе. Вторая линия: после MERGE
+    скрипт показывает строки tPermissionMatrix, которые расходятся с
+    выбранным окружением, — так видно матрицу, оставшуюся от прошлого
+    прогона с другим @Env. Схема не менялась, миграция не нужна.
+    См. «ПРЕДОХРАНИТЕЛЬ ОКРУЖЕНИЯ» ниже.
 
   v6: категория [AI Agent] — сервисные учётки только на чтение под ИИ-агентов.
     Обычная категория матрицы: db_datareader на PROD и на DEV, то есть
@@ -22,7 +33,7 @@
     а права CREATE DATABASE у запускающего тоже нет, скрипт больше не
     сваливается в master, а останавливается целиком (SET NOEXEC ON):
     ни одного объекта не создаётся, в выводе — причина и что делать.
-    См. «СОЗДАНИЕ БАЗЫ ДАННЫХ» сразу после шапки и «[10] ИТОГ ЗАПУСКА»
+    См. блок с предохранителями сразу после шапки и «[10] ИТОГ ЗАПУСКА»
     в конце файла.
 
   v4: деактивация (IsActive=0) теперь реально отзывает доступ — не только
@@ -89,8 +100,17 @@
 */
 
 -- ====================================================================
--- СОЗДАНИЕ БАЗЫ ДАННЫХ
+-- ОКРУЖЕНИЕ, ПРЕДОХРАНИТЕЛЬ ОКРУЖЕНИЯ И СОЗДАНИЕ БАЗЫ ДАННЫХ
 -- Идемпотентно: пропускает если уже существует.
+--
+-- Предохранитель на неверное окружение. @Env задаётся здесь и только
+-- здесь. Ошибиться им дорого: 'QA' на боевом сервере кладёт в матрицу
+-- права на запись и EXECUTE по боевым базам для Dev Team и Data Engineer
+-- Team, и первый же прогон spProvisionUsers их раздаст. Отличить сервер
+-- можно по факту: на QA-сервере рядом с боевыми базами лежат их dev-копии
+-- с суффиксом _dev, на боевом их нет и не будет. Поэтому сочетание
+-- «@Env = QA и ни одной _dev базы» считается ошибкой оператора и
+-- останавливает скрипт до создания чего бы то ни было.
 --
 -- Предохранитель на случай нехватки прав. Все объекты [0]–[10] создаются
 -- в текущей базе контекста, поэтому если [DBAProvisioning] нет и создать
@@ -101,47 +121,113 @@
 -- ====================================================================
 SET NOCOUNT ON;
 
+-- ════════════════════════════════════════════════════════════════════
+-- !! ОКРУЖЕНИЕ. ЕДИНСТВЕННОЕ МЕСТО, ГДЕ ЕГО НАДО ЗАДАТЬ !!
+--
+--   'QA'   → PROD + QA базы, полные права из матрицы
+--   'PROD' → все кроме DB Admin: db_datareader + VIEW DEFINITION
+--            (без EXECUTE и без записи на prod-базах)
+-- ════════════════════════════════════════════════════════════════════
+DECLARE @Env NVARCHAR(10) = N'QA';   -- ← 'QA' | 'PROD'
+
+-- Обход предохранителя. Единственный законный случай: сервер QA, но
+-- dev-баз на нём физически ещё нет (свежая установка). На боевом сервере
+-- не ставить — предохранитель для того и написан.
+DECLARE @SkipEnvGuard BIT = 0;
+-- ════════════════════════════════════════════════════════════════════
+
 IF OBJECT_ID('tempdb..#ProvisioningTarget') IS NOT NULL
     DROP TABLE #ProvisioningTarget;
 
 -- Временная таблица живёт до конца сессии — переживает GO и передаёт
--- решение о запуске всем последующим батчам скрипта.
+-- решение о запуске и выбранное окружение всем последующим батчам.
 CREATE TABLE #ProvisioningTarget
 (
     TargetDb sysname       NOT NULL,
     Mode     NVARCHAR(20)  NOT NULL,   -- EXISTING | CREATED | ABORT
-    Reason   NVARCHAR(400) NULL
+    Reason   NVARCHAR(400) NULL,
+    Env      NVARCHAR(10)  NOT NULL
 );
 
 DECLARE @TargetDb sysname = N'DBAProvisioning';
+
+-- Признак QA-сервера: рядом с боевыми базами лежат их dev-копии.
+-- LIKE N'%[_]dev' — квадратные скобки экранируют подчёркивание, иначе
+-- оно сработало бы как «любой символ» и совпало бы, например, с 'Bidev'.
+DECLARE @DevDbCount INT =
+    (SELECT COUNT(*) FROM sys.databases
+     WHERE state_desc = N'ONLINE' AND name LIKE N'%[_]dev');
 
 DECLARE @CanCreateDb BIT =
     CASE WHEN IS_SRVROLEMEMBER('sysadmin') = 1
            OR HAS_PERMS_BY_NAME(NULL, NULL, 'CREATE ANY DATABASE') = 1
          THEN 1 ELSE 0 END;
 
-IF DB_ID(@TargetDb) IS NOT NULL
+IF @Env IS NULL OR @Env NOT IN (N'QA', N'PROD')
 BEGIN
-    INSERT #ProvisioningTarget (TargetDb, Mode) VALUES (@TargetDb, N'EXISTING');
+    INSERT #ProvisioningTarget (TargetDb, Mode, Reason, Env)
+    VALUES (@TargetDb, N'ABORT',
+            N'@Env = ' + ISNULL(QUOTENAME(@Env, N''''), N'NULL')
+          + N' — допустимы только N''QA'' и N''PROD''.', ISNULL(@Env, N'?'));
+    PRINT 'СТОП: недопустимое значение @Env. Ожидается N''QA'' или N''PROD''.';
+    PRINT '      Скрипт остановлен, ни один объект не создан.';
+END
+ELSE IF @Env = N'QA' AND @DevDbCount = 0 AND @SkipEnvGuard = 0
+BEGIN
+    INSERT #ProvisioningTarget (TargetDb, Mode, Reason, Env)
+    VALUES (@TargetDb, N'ABORT',
+            N'@Env = QA, но на сервере ' + ISNULL(@@SERVERNAME, N'(имя неизвестно)')
+          + N' нет ни одной базы с суффиксом _dev — похоже на боевой сервер.', @Env);
+    PRINT 'СТОП: @Env = QA, но на сервере ' + ISNULL(@@SERVERNAME, N'(имя неизвестно)') + ' нет ни одной _dev базы.';
+    PRINT '      Так выглядит боевой сервер, а не QA. С окружением QA в матрицу';
+    PRINT '      легли бы запись и EXECUTE по боевым базам для Dev Team и';
+    PRINT '      Data Engineer Team — первый же прогон spProvisionUsers их раздаст.';
+    PRINT '      Скрипт остановлен, ни один объект не создан.';
+    PRINT '';
+    PRINT '      Что делать: если сервер боевой — поставь @Env = N''PROD'' и запусти заново.';
+    PRINT '      Если это всё-таки QA, где dev-баз ещё нет, — @SkipEnvGuard = 1.';
+    PRINT '      Если dev-базы на сервере есть, но эта учётка их не видит —';
+    PRINT '      нужна VIEW ANY DATABASE: sys.databases показывает только доступные базы.';
+END
+ELSE IF DB_ID(@TargetDb) IS NOT NULL
+BEGIN
+    INSERT #ProvisioningTarget (TargetDb, Mode, Env) VALUES (@TargetDb, N'EXISTING', @Env);
     PRINT 'SKIP: [DBAProvisioning] уже существует.';
 END
 ELSE IF @CanCreateDb = 1
 BEGIN
     CREATE DATABASE [DBAProvisioning];
-    INSERT #ProvisioningTarget (TargetDb, Mode) VALUES (@TargetDb, N'CREATED');
+    INSERT #ProvisioningTarget (TargetDb, Mode, Env) VALUES (@TargetDb, N'CREATED', @Env);
     PRINT 'OK: База данных [DBAProvisioning] создана.';
 END
 ELSE
 BEGIN
-    INSERT #ProvisioningTarget (TargetDb, Mode, Reason)
+    INSERT #ProvisioningTarget (TargetDb, Mode, Reason, Env)
     VALUES (@TargetDb, N'ABORT',
             N'базы [DBAProvisioning] нет, а у ' + SUSER_SNAME()
-          + N' нет права CREATE ANY DATABASE.');
+          + N' нет права CREATE ANY DATABASE.', @Env);
     PRINT 'СТОП: базы [DBAProvisioning] нет, а прав на CREATE DATABASE у ' + SUSER_SNAME() + ' нет.';
     PRINT '      Скрипт остановлен, ни один объект не создан.';
     PRINT '      Попроси DBA создать базу [DBAProvisioning] и выдать в ней db_owner,';
     PRINT '      затем запусти этот скрипт заново — он идемпотентен.';
 END
+
+-- Обратное сочетание не опасно: с окружением PROD на QA-сервере права
+-- окажутся строже, чем нужно, но лишнего никому не достанется. Поэтому
+-- предупреждение, а не остановка.
+IF @Env = N'PROD' AND @DevDbCount > 0
+   AND NOT EXISTS (SELECT 1 FROM #ProvisioningTarget WHERE Mode = N'ABORT')
+BEGIN
+    PRINT '';
+    PRINT 'ВНИМАНИЕ: @Env = PROD, но на сервере есть ' + CAST(@DevDbCount AS NVARCHAR(10))
+        + ' баз с суффиксом _dev — похоже на QA-сервер.';
+    PRINT '          Это не опасно (права выйдут строже нужного), но проверь окружение:';
+    PRINT '          на QA у Dev Team и Data Engineer Team не будет записи и EXECUTE.';
+    PRINT '';
+END
+
+IF @SkipEnvGuard = 1
+    PRINT 'ВНИМАНИЕ: предохранитель окружения отключён (@SkipEnvGuard = 1).';
 
 -- Дальше идти незачем: пропускаем USE и весь остаток скрипта.
 IF EXISTS (SELECT 1 FROM #ProvisioningTarget WHERE Mode = N'ABORT')
@@ -193,8 +279,11 @@ GO
 ========================================================================
   !! НАСТРОЙКА ОКРУЖЕНИЯ !!
 
-  Переменная @Env задаётся ниже, в блоке заполнения tPermissionMatrix
-  (ищи строку: DECLARE @Env NVARCHAR(10) = N'QA';)
+  Переменная @Env задаётся В САМОМ НАЧАЛЕ ФАЙЛА, в блоке «ОКРУЖЕНИЕ,
+  ПРЕДОХРАНИТЕЛЬ ОКРУЖЕНИЯ И СОЗДАНИЕ БАЗЫ ДАННЫХ» — там же, где стоит
+  предохранитель, который сверит её с реальным сервером. Ниже, в блоке
+  заполнения tPermissionMatrix, значение только читается из
+  #ProvisioningTarget: второго места для правки нет намеренно.
 
     'QA'   → PROD + QA базы, полные права из матрицы
     'PROD' → все кроме DB Admin: db_datareader + VIEW DEFINITION
@@ -382,63 +471,80 @@ ELSE
 GO
 
 -- ════════════════════════════════════════════════════════════════════
--- !! ЗДЕСЬ МЕНЯЙ ОКРУЖЕНИЕ ПЕРЕД ПЕРВЫМ ЗАПУСКОМ: 'QA' или 'PROD' !!
+-- Окружение выбрано в начале файла и уже проверено предохранителем.
+-- Здесь оно только читается из #ProvisioningTarget — правится оно там.
 -- ════════════════════════════════════════════════════════════════════
-DECLARE @Env NVARCHAR(10) = N'QA';   -- ← 'QA' | 'PROD'
--- ════════════════════════════════════════════════════════════════════
+DECLARE @Env NVARCHAR(10) = (SELECT TOP 1 Env FROM #ProvisioningTarget);
 --
 -- MERGE идемпотентен: добавляет отсутствующие строки, НЕ трогает существующие.
 --
 -- ВНИМАНИЕ: при смене @Env на уже настроенном сервере существующие строки
--- НЕ обновятся (WHEN MATCHED закомментирован). Чтобы применить новое
--- окружение — раскомментируй WHEN MATCHED ниже, либо очисти таблицу:
+-- НЕ обновятся (WHEN MATCHED закомментирован) — расхождения покажет отчёт
+-- сразу после MERGE. Чтобы применить новое окружение — раскомментируй
+-- WHEN MATCHED ниже, либо очисти таблицу:
 --   DELETE FROM dbo.tPermissionMatrix;
+
+-- Эталон вынесен в переменную, а не подставлен прямо в MERGE: та же
+-- таблица нужна ниже, чтобы сверить с ней уже существующие строки.
+DECLARE @Defaults TABLE
+(
+    Env                 NVARCHAR(10)  NOT NULL,
+    Category            NVARCHAR(50)  NOT NULL,
+    DbType              NVARCHAR(10)  NOT NULL,
+    DbRoles             NVARCHAR(500) NOT NULL,
+    GrantExecute        BIT           NOT NULL,
+    GrantViewDefinition BIT           NOT NULL,
+    Notes               NVARCHAR(500) NULL,
+    PRIMARY KEY (Env, Category, DbType)
+);
+
+INSERT INTO @Defaults (Env, Category, DbType, DbRoles, GrantExecute, GrantViewDefinition, Notes)
+VALUES
+-- Env     Категория              DbType  DbRoles                        EXEC VIEW  Комментарий
+-- ═══════════════════════════════════════════════════════════════════════════════════
+-- QA-сервер: полные права, PROD и DEV базы обе присутствуют
+-- ═══════════════════════════════════════════════════════════════════════════════════
+('QA',   'DB Admin',           'PROD', 'db_owner',                     0,   0,  'Полный владелец'),
+('QA',   'DB Admin',           'DEV',  'db_owner',                     0,   0,  'Полный владелец'),
+('QA',   'Dev Team',           'PROD', 'db_datareader|db_datawriter',  1,   1,  'Чтение + запись + EXECUTE + VIEW'),
+('QA',   'Dev Team',           'DEV',  'db_owner',                     0,   0,  'Полный владелец dev-баз'),
+('QA',   'Data Engineer Team', 'PROD', 'db_datareader|db_datawriter',  1,   1,  'Чтение + запись + EXECUTE + VIEW'),
+('QA',   'Data Engineer Team', 'DEV',  'db_datareader|db_datawriter',  1,   1,  'Чтение + запись + EXECUTE + VIEW'),
+('QA',   'QA',                 'PROD', 'db_datareader',                0,   1,  'Только чтение + VIEW'),
+('QA',   'QA',                 'DEV',  'db_datareader|db_datawriter',  0,   1,  'Чтение + запись + VIEW'),
+('QA',   'Support Senior',     'PROD', 'db_datareader',                0,   1,  'Только чтение + VIEW'),
+('QA',   'Support Senior',     'DEV',  'db_datareader',                0,   1,  'Только чтение + VIEW'),
+-- Сервисные учётки ИИ-агентов: чтение всех таблиц, ничего кроме чтения
+('QA',   'AI Agent',           'PROD', 'db_datareader',                0,   1,  'Только чтение + VIEW'),
+('QA',   'AI Agent',           'DEV',  'db_datareader',                0,   1,  'Только чтение + VIEW'),
+
+-- ═══════════════════════════════════════════════════════════════════════════════════
+-- PROD-сервер: все кроме DB Admin → только чтение + VIEW на prod-базах.
+-- DEV-строки оставлены на случай если dev-база всё же окажется на сервере.
+-- ═══════════════════════════════════════════════════════════════════════════════════
+('PROD', 'DB Admin',           'PROD', 'db_owner',                     0,   0,  'Полный владелец'),
+('PROD', 'DB Admin',           'DEV',  'db_owner',                     0,   0,  'Полный владелец'),
+('PROD', 'Dev Team',           'PROD', 'db_datareader',                0,   1,  'PROD: только чтение + VIEW'),
+('PROD', 'Dev Team',           'DEV',  'db_owner',                     0,   0,  'Полный владелец dev-баз'),
+('PROD', 'Data Engineer Team', 'PROD', 'db_datareader',                0,   1,  'PROD: только чтение + VIEW'),
+('PROD', 'Data Engineer Team', 'DEV',  'db_datareader|db_datawriter',  1,   1,  'Чтение + запись + EXECUTE + VIEW'),
+('PROD', 'QA',                 'PROD', 'db_datareader',                0,   1,  'PROD: только чтение + VIEW'),
+('PROD', 'QA',                 'DEV',  'db_datareader|db_datawriter',  0,   1,  'Чтение + запись + VIEW'),
+('PROD', 'Support Senior',     'PROD', 'db_datareader',                0,   1,  'PROD: только чтение + VIEW'),
+('PROD', 'Support Senior',     'DEV',  'db_datareader',                0,   1,  'Только чтение + VIEW'),
+-- Сервисные учётки ИИ-агентов: чтение всех таблиц, ничего кроме чтения
+('PROD', 'AI Agent',           'PROD', 'db_datareader',                0,   1,  'PROD: только чтение + VIEW'),
+('PROD', 'AI Agent',           'DEV',  'db_datareader',                0,   1,  'Только чтение + VIEW');
 
 MERGE INTO dbo.tPermissionMatrix AS T
 USING (
     SELECT Category, DbType, DbRoles, GrantExecute, GrantViewDefinition, Notes
-    FROM (VALUES
-    -- Env     Категория              DbType  DbRoles                        EXEC VIEW  Комментарий
-    -- ═══════════════════════════════════════════════════════════════════════════════════
-    -- QA-сервер: полные права, PROD и DEV базы обе присутствуют
-    -- ═══════════════════════════════════════════════════════════════════════════════════
-    ('QA',   'DB Admin',           'PROD', 'db_owner',                     0,   0,  'Полный владелец'),
-    ('QA',   'DB Admin',           'DEV',  'db_owner',                     0,   0,  'Полный владелец'),
-    ('QA',   'Dev Team',           'PROD', 'db_datareader|db_datawriter',  1,   1,  'Чтение + запись + EXECUTE + VIEW'),
-    ('QA',   'Dev Team',           'DEV',  'db_owner',                     0,   0,  'Полный владелец dev-баз'),
-    ('QA',   'Data Engineer Team', 'PROD', 'db_datareader|db_datawriter',  1,   1,  'Чтение + запись + EXECUTE + VIEW'),
-    ('QA',   'Data Engineer Team', 'DEV',  'db_datareader|db_datawriter',  1,   1,  'Чтение + запись + EXECUTE + VIEW'),
-    ('QA',   'QA',                 'PROD', 'db_datareader',                0,   1,  'Только чтение + VIEW'),
-    ('QA',   'QA',                 'DEV',  'db_datareader|db_datawriter',  0,   1,  'Чтение + запись + VIEW'),
-    ('QA',   'Support Senior',     'PROD', 'db_datareader',                0,   1,  'Только чтение + VIEW'),
-    ('QA',   'Support Senior',     'DEV',  'db_datareader',                0,   1,  'Только чтение + VIEW'),
-    -- Сервисные учётки ИИ-агентов: чтение всех таблиц, ничего кроме чтения
-    ('QA',   'AI Agent',           'PROD', 'db_datareader',                0,   1,  'Только чтение + VIEW'),
-    ('QA',   'AI Agent',           'DEV',  'db_datareader',                0,   1,  'Только чтение + VIEW'),
-
-    -- ═══════════════════════════════════════════════════════════════════════════════════
-    -- PROD-сервер: все кроме DB Admin → только чтение + VIEW на prod-базах.
-    -- DEV-строки оставлены на случай если dev-база всё же окажется на сервере.
-    -- ═══════════════════════════════════════════════════════════════════════════════════
-    ('PROD', 'DB Admin',           'PROD', 'db_owner',                     0,   0,  'Полный владелец'),
-    ('PROD', 'DB Admin',           'DEV',  'db_owner',                     0,   0,  'Полный владелец'),
-    ('PROD', 'Dev Team',           'PROD', 'db_datareader',                0,   1,  'PROD: только чтение + VIEW'),
-    ('PROD', 'Dev Team',           'DEV',  'db_owner',                     0,   0,  'Полный владелец dev-баз'),
-    ('PROD', 'Data Engineer Team', 'PROD', 'db_datareader',                0,   1,  'PROD: только чтение + VIEW'),
-    ('PROD', 'Data Engineer Team', 'DEV',  'db_datareader|db_datawriter',  1,   1,  'Чтение + запись + EXECUTE + VIEW'),
-    ('PROD', 'QA',                 'PROD', 'db_datareader',                0,   1,  'PROD: только чтение + VIEW'),
-    ('PROD', 'QA',                 'DEV',  'db_datareader|db_datawriter',  0,   1,  'Чтение + запись + VIEW'),
-    ('PROD', 'Support Senior',     'PROD', 'db_datareader',                0,   1,  'PROD: только чтение + VIEW'),
-    ('PROD', 'Support Senior',     'DEV',  'db_datareader',                0,   1,  'Только чтение + VIEW'),
-    -- Сервисные учётки ИИ-агентов: чтение всех таблиц, ничего кроме чтения
-    ('PROD', 'AI Agent',           'PROD', 'db_datareader',                0,   1,  'PROD: только чтение + VIEW'),
-    ('PROD', 'AI Agent',           'DEV',  'db_datareader',                0,   1,  'Только чтение + VIEW')
-    ) AS v (Env, Category, DbType, DbRoles, GrantExecute, GrantViewDefinition, Notes)
-    WHERE v.Env = @Env
-) AS S (Category, DbType, DbRoles, GrantExecute, GrantViewDefinition, Notes)
+    FROM   @Defaults
+    WHERE  Env = @Env
+) AS S
 ON T.Category = S.Category AND T.DbType = S.DbType
 -- Раскомментируй WHEN MATCHED чтобы принудительно сбросить к умолчаниям
--- (нужно при смене ServerEnvironment на уже настроенном сервере):
+-- (нужно при смене окружения на уже настроенном сервере):
 -- WHEN MATCHED THEN
 --     UPDATE SET DbRoles = S.DbRoles, GrantExecute = S.GrantExecute,
 --                GrantViewDefinition = S.GrantViewDefinition,
@@ -448,6 +554,45 @@ WHEN NOT MATCHED THEN
     VALUES (S.Category, S.DbType, S.DbRoles, S.GrantExecute, S.GrantViewDefinition, S.Notes);
 
 PRINT 'OK: dbo.tPermissionMatrix синхронизирована для окружения ' + @Env + '.';
+
+-- ── Вторая линия предохранителя ──────────────────────────────────────
+-- MERGE не трогает существующие строки, поэтому матрица, заполненная
+-- когда-то другим окружением, молча переживёт этот прогон. Показываем
+-- такие строки явно: это либо след ошибочного прогона, либо осознанная
+-- ручная правка — решает человек, но видеть он их обязан.
+-- Notes не сравниваем: у совпадающих по правам строк текст всё равно
+-- разный ('Только чтение + VIEW' против 'PROD: только чтение + VIEW').
+IF EXISTS (
+    SELECT 1
+    FROM   dbo.tPermissionMatrix T
+    JOIN   @Defaults D ON D.Env = @Env AND D.Category = T.Category AND D.DbType = T.DbType
+    WHERE  T.DbRoles             <> D.DbRoles
+       OR  T.GrantExecute        <> D.GrantExecute
+       OR  T.GrantViewDefinition <> D.GrantViewDefinition
+)
+BEGIN
+    PRINT '';
+    PRINT 'ВНИМАНИЕ: строки tPermissionMatrix расходятся с окружением ' + @Env + ' (список ниже).';
+    PRINT '          Если это след прогона с другим @Env — поправь строки UPDATE-ом';
+    PRINT '          или очисти таблицу и перезапусти скрипт. Если правка ручная — оставь.';
+    PRINT '          Права на сервере при этом не менялись: их раскладывает только';
+    PRINT '          EXEC dbo.spProvisionUsers @DryRun = 0.';
+    PRINT '';
+
+    SELECT  T.Category, T.DbType,
+            T.DbRoles             AS [Роли в таблице], D.DbRoles           AS [Роли по окружению],
+            T.GrantExecute        AS [EXEC в таблице], D.GrantExecute        AS [EXEC по окружению],
+            T.GrantViewDefinition AS [VIEW в таблице], D.GrantViewDefinition AS [VIEW по окружению],
+            T.UpdatedAt
+    FROM    dbo.tPermissionMatrix T
+    JOIN    @Defaults D ON D.Env = @Env AND D.Category = T.Category AND D.DbType = T.DbType
+    WHERE   T.DbRoles             <> D.DbRoles
+       OR   T.GrantExecute        <> D.GrantExecute
+       OR   T.GrantViewDefinition <> D.GrantViewDefinition
+    ORDER BY T.DbType DESC, T.Category;
+END
+ELSE
+    PRINT 'OK: все строки tPermissionMatrix соответствуют окружению ' + @Env + '.';
 GO
 
 -- ====================================================================
@@ -1678,8 +1823,18 @@ IF @Mode = N'ABORT'
 BEGIN
     PRINT '════════ ИТОГ: скрипт НЕ выполнен, объекты не создавались ════════';
     PRINT 'Причина: ' + ISNULL(@Why, N'нет прав на создание базы [DBAProvisioning].');
-    PRINT 'Что делать: попросить DBA создать базу [DBAProvisioning] и выдать db_owner в ней,';
-    PRINT '            затем перезапустить этот скрипт — он идемпотентен.';
+    -- Остановок три, и советы у них разные: нехватка прав лечится через DBA,
+    -- ошибка в окружении — правкой @Env в начале файла.
+    IF @Why LIKE N'%@Env%'
+    BEGIN
+        PRINT 'Что делать: исправить @Env в начале файла и перезапустить скрипт —';
+        PRINT '            он идемпотентен. Подробности в блоке СТОП выше.';
+    END
+    ELSE
+    BEGIN
+        PRINT 'Что делать: попросить DBA создать базу [DBAProvisioning] и выдать db_owner в ней,';
+        PRINT '            затем перезапустить этот скрипт — он идемпотентен.';
+    END
 END
 ELSE
 BEGIN
@@ -1824,8 +1979,13 @@ EXEC [DBAProvisioning].dbo.spProvisionOverrides @DryRun = 0;
 
 -- Сменить окружение на уже настроенном сервере:
 --   1. DELETE FROM [DBAProvisioning].dbo.tPermissionMatrix;
---   2. Поменяй @Env вверху файла и перезапусти init-скрипт
+--   2. Поменяй @Env в начале init-скрипта и перезапусти его
 --   3. EXEC [DBAProvisioning].dbo.spProvisionUsers @DryRun = 0;
+--
+-- Если менять окружение не собирался, а скрипт после MERGE показал
+-- расходящиеся строки — значит прошлый прогон был с другим @Env.
+-- Правь точечным UPDATE-ом, а не DELETE + перезапуск: перезапуск затрёт
+-- заодно и осознанные ручные правки в остальных строках.
 
 
 -- ════════════════════════════════════════════════════════════════════
