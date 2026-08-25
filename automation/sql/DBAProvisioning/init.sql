@@ -1,7 +1,14 @@
 /*
 ========================================================================
-  USER PROVISIONING SYSTEM FOR MSSQL  — v4
+  USER PROVISIONING SYSTEM FOR MSSQL  — v5
   Безопасна для многократного запуска (Idempotent)
+
+  v5: предохранитель на нехватку прав. Если базы [DBAProvisioning] нет,
+    а права CREATE DATABASE у запускающего тоже нет, скрипт больше не
+    сваливается в master, а останавливается целиком (SET NOEXEC ON):
+    ни одного объекта не создаётся, в выводе — причина и что делать.
+    См. «СОЗДАНИЕ БАЗЫ ДАННЫХ» сразу после шапки и «[9] ИТОГ ЗАПУСКА»
+    в конце файла.
 
   v4: деактивация (IsActive=0) теперь реально отзывает доступ — не только
   исключает пользователя из будущих прогонов. При IsActive=0 скрипт:
@@ -63,17 +70,85 @@
 -- ====================================================================
 -- СОЗДАНИЕ БАЗЫ ДАННЫХ
 -- Идемпотентно: пропускает если уже существует.
+--
+-- Предохранитель на случай нехватки прав. Все объекты [0]–[8] создаются
+-- в текущей базе контекста, поэтому если [DBAProvisioning] нет и создать
+-- её нельзя (нет CREATE ANY DATABASE), то без проверки USE молча упадёт,
+-- а весь остаток скрипта развернётся в master. Здесь такой прогон
+-- останавливается целиком: SET NOEXEC ON, ни одного объекта не создаётся,
+-- в выводе — причина и что делать.
 -- ====================================================================
-IF NOT EXISTS (SELECT 1 FROM sys.databases WHERE name = N'DBAProvisioning')
+SET NOCOUNT ON;
+
+IF OBJECT_ID('tempdb..#ProvisioningTarget') IS NOT NULL
+    DROP TABLE #ProvisioningTarget;
+
+-- Временная таблица живёт до конца сессии — переживает GO и передаёт
+-- решение о запуске всем последующим батчам скрипта.
+CREATE TABLE #ProvisioningTarget
+(
+    TargetDb sysname       NOT NULL,
+    Mode     NVARCHAR(20)  NOT NULL,   -- EXISTING | CREATED | ABORT
+    Reason   NVARCHAR(400) NULL
+);
+
+DECLARE @TargetDb sysname = N'DBAProvisioning';
+
+DECLARE @CanCreateDb BIT =
+    CASE WHEN IS_SRVROLEMEMBER('sysadmin') = 1
+           OR HAS_PERMS_BY_NAME(NULL, NULL, 'CREATE ANY DATABASE') = 1
+         THEN 1 ELSE 0 END;
+
+IF DB_ID(@TargetDb) IS NOT NULL
+BEGIN
+    INSERT #ProvisioningTarget (TargetDb, Mode) VALUES (@TargetDb, N'EXISTING');
+    PRINT 'SKIP: [DBAProvisioning] уже существует.';
+END
+ELSE IF @CanCreateDb = 1
 BEGIN
     CREATE DATABASE [DBAProvisioning];
+    INSERT #ProvisioningTarget (TargetDb, Mode) VALUES (@TargetDb, N'CREATED');
     PRINT 'OK: База данных [DBAProvisioning] создана.';
 END
 ELSE
-    PRINT 'SKIP: [DBAProvisioning] уже существует.';
+BEGIN
+    INSERT #ProvisioningTarget (TargetDb, Mode, Reason)
+    VALUES (@TargetDb, N'ABORT',
+            N'базы [DBAProvisioning] нет, а у ' + SUSER_SNAME()
+          + N' нет права CREATE ANY DATABASE.');
+    PRINT 'СТОП: базы [DBAProvisioning] нет, а прав на CREATE DATABASE у ' + SUSER_SNAME() + ' нет.';
+    PRINT '      Скрипт остановлен, ни один объект не создан.';
+    PRINT '      Попроси DBA создать базу [DBAProvisioning] и выдать в ней db_owner,';
+    PRINT '      затем запусти этот скрипт заново — он идемпотентен.';
+END
+
+-- Дальше идти незачем: пропускаем USE и весь остаток скрипта.
+IF EXISTS (SELECT 1 FROM #ProvisioningTarget WHERE Mode = N'ABORT')
+    SET NOEXEC ON;
 GO
 
 USE [DBAProvisioning];
+GO
+
+-- Безусловно: батч под NOEXEC ON не выполняется, поэтому вернуть
+-- выполнение можно только голым SET NOEXEC OFF, без IF.
+SET NOEXEC OFF;
+GO
+
+-- Контроль контекста: объекты создаются в текущей базе, значит мы обязаны
+-- стоять ровно в [DBAProvisioning]. Если USE не сработал (база есть, но
+-- доступа к ней нет) — останавливаемся, чтобы объекты не уехали в master.
+IF EXISTS (SELECT 1 FROM #ProvisioningTarget WHERE Mode = N'ABORT')
+    SET NOEXEC ON;
+ELSE IF EXISTS (SELECT 1 FROM #ProvisioningTarget WHERE TargetDb <> DB_NAME())
+BEGIN
+    PRINT 'СТОП: не удалось переключиться в [DBAProvisioning] — текущий контекст [' + DB_NAME() + '].';
+    PRINT '      Нужен доступ к базе и db_owner в ней. Объекты не создаются.';
+    UPDATE #ProvisioningTarget
+    SET    Mode   = N'ABORT',
+           Reason = N'USE не сработал, контекст остался [' + DB_NAME() + N'].';
+    SET NOEXEC ON;
+END
 GO
 
 -- ====================================================================
@@ -1322,6 +1397,36 @@ WHERE NOT EXISTS (
 SET @Removed = @@ROWCOUNT;
 PRINT 'OK: dbo.tDatabases очищена — удалено записей: ' + CAST(@Removed AS NVARCHAR(10)) + '.';
 GO
+
+-- ====================================================================
+-- [9] ИТОГ ЗАПУСКА
+--     Снимает NOEXEC (иначе сессия останется «немой» и следующие запросы
+--     будут молча ничего не делать) и печатает результат.
+-- ====================================================================
+SET NOEXEC OFF;
+GO
+
+DECLARE @Mode NVARCHAR(20)  = (SELECT TOP 1 Mode   FROM #ProvisioningTarget);
+DECLARE @Why  NVARCHAR(400) = (SELECT TOP 1 Reason FROM #ProvisioningTarget);
+
+PRINT '';
+IF @Mode = N'ABORT'
+BEGIN
+    PRINT '════════ ИТОГ: скрипт НЕ выполнен, объекты не создавались ════════';
+    PRINT 'Причина: ' + ISNULL(@Why, N'нет прав на создание базы [DBAProvisioning].');
+    PRINT 'Что делать: попросить DBA создать базу [DBAProvisioning] и выдать db_owner в ней,';
+    PRINT '            затем перезапустить этот скрипт — он идемпотентен.';
+END
+ELSE
+BEGIN
+    PRINT '════════ ИТОГ: объекты развёрнуты в базе [DBAProvisioning] ════════';
+    PRINT 'Запуск:  EXEC [DBAProvisioning].dbo.spProvisionUsers @DryRun = 1;   -- проверка';
+    PRINT '         EXEC [DBAProvisioning].dbo.spProvisionUsers @DryRun = 0;   -- применить';
+END
+
+DROP TABLE #ProvisioningTarget;
+GO
+
 
 -- ====================================================================
 -- ПРИМЕРЫ И КОМАНДЫ
