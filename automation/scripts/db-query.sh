@@ -5,9 +5,9 @@
 # Обёртка делает ровно одно: подставляет сервер, логин и пароль. Всё
 # остальное — сам sqlcmd, флаги и SQL пишет тот, кто вызывает.
 #
-#   db-query.sh --profile servier -d crmAdmin -Q "SELECT TOP 5 Id FROM dbo.tPersonConsent"
-#   db-query.sh --profile servier -Q "SELECT name FROM sys.databases ORDER BY name"
-#   db-query.sh --profile servier -d crmAdmin -i запрос.sql
+#   db-query.sh --profile srv -d crmAdmin -Q "SELECT TOP 5 Id FROM dbo.tPersonConsent"
+#   db-query.sh --profile srv -Q "SELECT name FROM sys.databases ORDER BY name"
+#   db-query.sh --profile srv -d crmAdmin -i запрос.sql
 #   db-query.sh --profiles                              # список клиентов
 #   db-query.sh --help                                  # эта справка
 #
@@ -34,7 +34,7 @@
 #
 # Базу называй флагом sqlcmd `-d <база>`: на сервере клиента их много — своя
 # под админку, своя под согласия. Какие есть — спроси у сервера:
-#   db-query.sh --profile servier -Q "SELECT name FROM sys.databases ORDER BY name"
+#   db-query.sh --profile srv -Q "SELECT name FROM sys.databases ORDER BY name"
 #
 # Если у клиента база одна и та же всегда, впиши её в профиль строкой
 # PBE_MSSQL_DB=<база> — она подставится, когда -d не задан. Заданный -d

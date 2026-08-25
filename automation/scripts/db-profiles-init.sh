@@ -1,12 +1,17 @@
 #!/usr/bin/env bash
 #
-# Заводит профили клиентов для db-query.sh — ~/.config/pbe-mssql/<клиент>.env.
+# Заводит профили клиентов для db-query.sh — ~/.config/pbe-mssql/<мнемоника>.env.
 #
 #   db-profiles-init.sh                       # создать/проверить все профили
 #   db-profiles-init.sh --dry-run             # показать, что сделает, не трогая файлы
 #   db-profiles-init.sh --user svc_ai_ivanov  # заодно завести common.env с учёткой
 #   db-profiles-init.sh --force               # переписать сервер там, где он разошёлся
-#   db-profiles-init.sh --list                # таблица «клиент — сервер» из скрипта
+#   db-profiles-init.sh --list                # таблица «профиль — сервер» из скрипта
+#
+# ИМЯ ПРОФИЛЯ — МНЕМОНИКА КЛИЕНТА (vlt, srv, bay), а не его название. Та же,
+# что в тегах Трекера и в консоли, только в нижнем регистре. Профили, заведённые
+# по старым именам (valenta.env, servier.env), скрипт не трогает и не удаляет —
+# он перечислит их как «вне списка»; лишние снести руками.
 #
 # ИДЕМПОТЕНТНОСТЬ. Прогонять можно сколько угодно раз: файл с тем же сервером
 # не переписывается, только чинится chmod 600. Дублей не будет — на клиента
@@ -27,24 +32,30 @@
 
 set -euo pipefail
 
-# клиент|сервер|комментарий в шапку файла
+# профиль|сервер|комментарий в шапку файла
+#
+# Профиль клиента называется его МНЕМОНИКОЙ — той же, что в Трекере и консоли
+# (docs/regulations/tracker-queues.md, раздел «Клиентская мнемоника и Теги»),
+# в нижнем регистре. Так `--profile vlt` в db-query.sh, тег `VLT` в задаче и
+# клиент в консоли указывают на одного и того же клиента, а не на трёх разных.
+# Тестовый контур — та же мнемоника с суффиксом `-qa`.
 PROFILES=(
-  "dev|212.8.235.60|дев-среда"
-  "valenta|91.107.87.131|Валента, прод"
-  "valenta-qa|212.8.235.60|Валента, тест (на сервере дев-среды)"
-  "avexima|172.30.1.9|Авексима, прод"
-  "avexima-qa|212.8.235.60|Авексима, тест (на сервере дев-среды)"
+  "dev|212.8.235.60|дев-среда (общая, не клиент)"
+  "vlt|91.107.87.131|Валента, прод"
+  "vlt-qa|212.8.235.60|Валента, тест (на сервере дев-среды)"
+  "avx|172.30.1.9|Авексима, прод"
+  "avx-qa|212.8.235.60|Авексима, тест (на сервере дев-среды)"
   "alcea|172.30.2.12|Алцея, прод"
-  "besins|172.30.2.5|Безен, прод"
-  "mayoly|172.30.2.13|Майоли, прод"
-  "bayer|pbesql02p|Байер, прод"
-  "bayer-qa|pbesql04t|Байер, QA"
-  "boehringer|172.20.15.10|Берингер, прод"
-  "boehringer-qa|pbesql03t|Берингер, QA"
-  "roche|pbesql04p|РОШ, прод"
-  "roche-qa|172.20.14.12|РОШ, QA"
-  "servier|pbesql03p|Сервье, прод"
-  "servier-qa|172.20.14.11|Сервье, QA"
+  "bsn|172.30.2.5|Безен, прод"
+  "may|172.30.2.13|Майоли, прод"
+  "bay|pbesql02p|Байер, прод"
+  "bay-qa|pbesql04t|Байер, QA"
+  "boe|172.20.15.10|Берингер, прод"
+  "boe-qa|pbesql03t|Берингер, QA"
+  "roc|pbesql04p|РОШ, прод"
+  "roc-qa|172.20.14.12|РОШ, QA"
+  "srv|pbesql03p|Сервье, прод"
+  "srv-qa|172.20.14.11|Сервье, QA"
 )
 
 DRY=0; FORCE=0; USER_ACCOUNT=""; MODE="run"
@@ -65,10 +76,11 @@ done
 CONF_DIR="${PBE_MSSQL_CONF_DIR:-$HOME/.config/pbe-mssql}"
 
 if [[ "$MODE" == "list" ]]; then
-  printf '%-14s %-16s %s\n' "КЛИЕНТ" "СЕРВЕР" "ЧТО ЭТО"
+  # шапка выравнивается вручную: printf считает байты, а кириллица в UTF-8 двухбайтовая
+  printf '%s\n' "ПРОФИЛЬ    СЕРВЕР           ЧТО ЭТО"
   for row in "${PROFILES[@]}"; do
     IFS='|' read -r name server note <<< "$row"
-    printf '%-14s %-16s %s\n' "$name" "$server" "$note"
+    printf '%-10s %-16s %s\n' "$name" "$server" "$note"
   done
   exit 0
 fi
@@ -131,7 +143,7 @@ for row in "${PROFILES[@]}"; do
   file="$CONF_DIR/$name.env"
 
   if [[ ! -f "$file" ]]; then
-    say "  $(printf '%-14s' "$name")  создан        $server"
+    say "  $(printf '%-10s' "$name")  создан        $server"
     [[ "$DRY" -eq 1 ]] || printf '# %s\nPBE_MSSQL_SERVER=%s\n' "$note" "$server" > "$file"
     run chmod 600 "$file"
     created=$((created+1))
@@ -140,18 +152,18 @@ for row in "${PROFILES[@]}"; do
 
   cur="$(value_of "$file" PBE_MSSQL_SERVER)"
   if [[ "$cur" == "$server" ]]; then
-    say "  $(printf '%-14s' "$name")  ok            $server"
+    say "  $(printf '%-10s' "$name")  ok            $server"
     ok=$((ok+1))
   elif [[ -z "$cur" ]]; then
-    say "  $(printf '%-14s' "$name")  дописан       $server"
+    say "  $(printf '%-10s' "$name")  дописан       $server"
     run set_key "$file" PBE_MSSQL_SERVER "$server"
     fixed=$((fixed+1))
   elif [[ "$FORCE" -eq 1 ]]; then
-    say "  $(printf '%-14s' "$name")  переписан     $cur -> $server"
+    say "  $(printf '%-10s' "$name")  переписан     $cur -> $server"
     run set_key "$file" PBE_MSSQL_SERVER "$server"
     fixed=$((fixed+1))
   else
-    say "  $(printf '%-14s' "$name")  РАСХОЖДЕНИЕ   в файле $cur, в скрипте $server"
+    say "  $(printf '%-10s' "$name")  РАСХОЖДЕНИЕ   в файле $cur, в скрипте $server"
     conflicts=$((conflicts+1))
   fi
   run chmod 600 "$file"
@@ -170,7 +182,10 @@ if compgen -G "$CONF_DIR/*.env" > /dev/null; then
     for row in "${PROFILES[@]}"; do [[ "${row%%|*}" == "$n" ]] && { known=1; break; }; done
     [[ "$known" -eq 0 ]] && extra="$extra $n"
   done
-  [[ -n "$extra" ]] && say "Профили вне списка (скрипт их не трогает):$extra"
+  if [[ -n "$extra" ]]; then
+    say "Профили вне списка (скрипт их не трогает):$extra"
+    say "Профили по старым именам клиентов заменены мнемониками — лишние удалить руками."
+  fi
 fi
 
 if [[ "$conflicts" -gt 0 ]]; then

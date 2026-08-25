@@ -475,9 +475,9 @@ API отдаёт тело страницы только при явном зап
 
 ```bash
 ./db-query.sh --profiles                                   # список клиентов
-./db-query.sh --profile servier -Q "SELECT name FROM sys.databases ORDER BY name"
-./db-query.sh --profile servier -d crmAdmin -Q "SELECT TOP 5 Id FROM consents.tPersonConsent"
-./db-query.sh --profile servier -d crmAdmin -i sql/checks/mdlp-stock-diff.sql
+./db-query.sh --profile srv -Q "SELECT name FROM sys.databases ORDER BY name"
+./db-query.sh --profile srv -d crmAdmin -Q "SELECT TOP 5 Id FROM consents.tPersonConsent"
+./db-query.sh --profile srv -d crmAdmin -i sql/checks/mdlp-stock-diff.sql
 ```
 
 Обёртке принадлежат только длинные флаги — `--profile`, `--profiles`, `--help`.
@@ -521,10 +521,17 @@ sqlcmd -S <сервер> -d DBAProvisioning -i ../sql/DBAProvisioning/check-ai-a
 ### Профили — список клиентов
 
 ```
-~/.config/pbe-mssql/common.env     PBE_MSSQL_USER=svc_ai_<фамилия>   учётка, одна на все контуры
-~/.config/pbe-mssql/<клиент>.env   PBE_MSSQL_SERVER=pbesql03p        сервер клиента
-                                   PBE_MSSQL_DB=<база>               необязательно: база по умолчанию
+~/.config/pbe-mssql/common.env       PBE_MSSQL_USER=svc_ai_<фамилия>   учётка, одна на все контуры
+~/.config/pbe-mssql/<мнемоника>.env  PBE_MSSQL_SERVER=pbesql03p        сервер клиента
+                                     PBE_MSSQL_DB=<база>               необязательно: база по умолчанию
 ```
+
+**Профиль называется мнемоникой клиента** — `vlt`, `srv`, `bay`, тестовый контур
+с суффиксом `-qa` (`srv-qa`). Мнемоника та же, что в тегах Трекера и в консоли
+(«Клиентская мнемоника и Теги» в
+[регламенте очередей](../../docs/regulations/tracker-queues.md)), только строчными:
+`--profile srv`, тег `SRV` и клиент в консоли — про одного клиента, а не про трёх.
+Общая дев-среда клиентом не является и зовётся `dev`.
 
 Учётные данные задаются один раз: логин в `common.env`, пароль в Keychain
 (`pbe-mssql`). Добавить клиента — одна строка, а не ещё одна пара логин-пароль.
@@ -543,7 +550,7 @@ sqlcmd -S <сервер> -d DBAProvisioning -i ../sql/DBAProvisioning/check-ai-a
 Руками файлы не пишем — есть [`db-profiles-init.sh`](db-profiles-init.sh):
 
 ```bash
-./db-profiles-init.sh --list                    # какие клиенты и серверы знает скрипт
+./db-profiles-init.sh --list                    # какие профили и серверы знает скрипт
 ./db-profiles-init.sh --dry-run                 # что сделает, ничего не трогая
 ./db-profiles-init.sh --user svc_ai_<фамилия>   # завести всё: common.env + профили клиентов
 security add-generic-password -s pbe-mssql -a "$USER" -w '<пароль>'
