@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(bash .claude/scripts/tracker-issue.sh:*)",
+      "Bash(.claude/scripts/tracker-issue.sh:*)",
+      "Bash(bash .claude/scripts/wiki-page.sh:*)",
+      "Bash(.claude/scripts/wiki-page.sh:*)",
+      "Bash(.claude/scripts/db-query.sh:*)",
+      "Bash(bash .claude/scripts/db-query.sh:*)",
+      "Bash(./.claude/scripts/db-query.sh:*)"
+    ],
+    "deny": [
+      "Bash(sqlcmd:*)",
+      "Bash(/opt/mssql-tools18/bin/sqlcmd:*)",
+      "Bash(/opt/mssql-tools/bin/sqlcmd:*)",
+      "Bash(bcp:*)",
+      "Bash(osql:*)",
+      "Bash(isql:*)"
+    ]
+  }
+}

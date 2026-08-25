@@ -12,6 +12,10 @@
 Внешние ссылки (http) и якоря (#) не проверяются. Код в обратных кавычках и
 блоки ``` пропускаются — там встречается разметка, похожая на ссылку.
 
+Каталог automation/claude/ пропускается целиком: там лежат эталонные копии
+команд и настроек чужих репозиториев, и относительные ссылки в них ведут
+на файлы тех репозиториев, а не этого.
+
 Код возврата: 0 — всё цело, 1 — есть битые ссылки.
 """
 
@@ -20,6 +24,8 @@ import re
 import sys
 
 LINK = re.compile(r'\[([^\]]+)\]\(([^)\s]+)\)')
+# Эталоны чужих репозиториев: их ссылки резолвятся не здесь, а у себя дома.
+SKIP_PATHS = ("automation/claude",)
 CODE_SPAN = re.compile(r'`[^`]*`')
 FENCE = re.compile(r'^\s*```')
 
@@ -46,6 +52,8 @@ def main():
             if not fn.endswith(".md"):
                 continue
             path = os.path.join(dirpath, fn)
+            if any(p in path.replace(os.sep, "/") for p in SKIP_PATHS):
+                continue
             text = strip_code(open(path, encoding="utf-8").read())
             for m in LINK.finditer(text):
                 target = m.group(2)

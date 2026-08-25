@@ -8,3 +8,12 @@
 # устаревают за считанные дни. Описание — reports/README.md (он в git).
 reports/*
 !reports/README.md
+
+# Журнал обращений к БД через db-query.sh
+logs/
+
+# Сид сервисных учёток ИИ-агентов: лежит рядом с init.sql, но в git не едет —
+# это единственное место, где пароли записаны открытым текстом.
+# Шаблон с плейсхолдерами (*.example.sql) наоборот версионируется.
+automation/sql/DBAProvisioning/seed-*.sql
+!automation/sql/DBAProvisioning/seed-*.example.sql

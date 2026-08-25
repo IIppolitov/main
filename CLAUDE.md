@@ -118,7 +118,8 @@ DevOps (технический директор Улич Дмитрий), тех
 | [docs/regulations/](docs/regulations/) | Регламенты: рабочие копии из Вики (правим здесь) и конспекты утверждённых |
 | [docs/templates/](docs/templates/) | Шаблоны документов (регламент, ТЗ, служебка, инцидент, ADR) |
 | [automation/sql/](automation/sql/) | SQL для MSSQL (в т.ч. система провижининга доступов) |
-| [automation/scripts/](automation/scripts/) | Утилиты чтения Трекера и Вики, прочая автоматизация |
+| [automation/scripts/](automation/scripts/) | Утилиты чтения Трекера и Вики, чтения MSSQL, прочая автоматизация |
+| [automation/claude/](automation/claude/) | Эталоны команд и настроек Claude Code для проектов |
 | [reports/](reports/) | Выгрузки и отчёты скриптов. **Вне git** — в репозитории только README |
 
 Новый документ кладётся в существующий раздел; новые папки верхнего уровня

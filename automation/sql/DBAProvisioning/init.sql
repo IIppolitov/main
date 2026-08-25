@@ -1,13 +1,28 @@
 /*
 ========================================================================
-  USER PROVISIONING SYSTEM FOR MSSQL  — v5
+  USER PROVISIONING SYSTEM FOR MSSQL  — v6
   Безопасна для многократного запуска (Idempotent)
+
+  v6: категория [AI Agent] — сервисные учётки только на чтение под ИИ-агентов.
+    Обычная категория матрицы: db_datareader на PROD и на DEV, то есть
+    SELECT на все таблицы и вьюхи каждой базы из tDatabases, включая те,
+    что появятся позже. EXECUTE не выдаётся — процедура умеет писать.
+    В [sysadmin] такая учётка не попадает никогда (это только [DB Admin])
+    и обязана быть SQL-логином (CHECK chk_upl_AiAgentIsSql).
+    Модель — одна учётка на разработчика (svc_ai_<фамилия>), все контуры.
+    Заводится процедурой [8] dbo.spProvisionAiAgent; подробности и порядок
+    отзыва — «СЕРВИСНЫЕ УЧЁТКИ ДЛЯ ИИ-АГЕНТОВ» в конце файла.
+
+    Попутно исправлено: пара «пользователь + база», закрытая исключением,
+    больше не обрабатывается матрицей. Раньше каждый прогон сначала снимал
+    права по матрице, а следом выдавал их заново по исключению — доступ
+    моргал в середине прогона, а журнал распухал на ровном месте.
 
   v5: предохранитель на нехватку прав. Если базы [DBAProvisioning] нет,
     а права CREATE DATABASE у запускающего тоже нет, скрипт больше не
     сваливается в master, а останавливается целиком (SET NOEXEC ON):
     ни одного объекта не создаётся, в выводе — причина и что делать.
-    См. «СОЗДАНИЕ БАЗЫ ДАННЫХ» сразу после шапки и «[9] ИТОГ ЗАПУСКА»
+    См. «СОЗДАНИЕ БАЗЫ ДАННЫХ» сразу после шапки и «[10] ИТОГ ЗАПУСКА»
     в конце файла.
 
   v4: деактивация (IsActive=0) теперь реально отзывает доступ — не только
@@ -34,6 +49,8 @@
   │ QA                   │ DEV     │ db_datareader|db_datawriter│  —   │  ✓   │
   │ Support Senior       │ PROD    │ db_datareader              │  —   │  ✓   │
   │ Support Senior       │ DEV     │ db_datareader              │  —   │  ✓   │
+  │ AI Agent             │ PROD    │ db_datareader              │  —   │  ✓   │
+  │ AI Agent             │ DEV     │ db_datareader              │  —   │  ✓   │
   └──────────────────────┴─────────┴───────────────────────────┴──────┴──────┘
 
   EXEC = GRANT EXECUTE        — запуск всех процедур и функций в базе
@@ -41,6 +58,9 @@
   DbType: PROD = базы без суффикса _dev  |  DEV = базы с суффиксом _dev
   Примечание: db_owner уже включает оба права, поэтому DB Admin и Dev Team DEV
               не нуждаются в явных EXEC/VIEW — они получают их через роль.
+  AI Agent:   сервисные учётки ИИ-агентов. Права те же, что у Support Senior,
+              но категория отдельная намеренно: за ней стоит не человек,
+              а процесс, и отзывать/сужать её надо независимо от людей.
 
   ОБЪЕКТЫ (все создаются в базе [DBAProvisioning]):
     [0] dbo.fnQuoteLiteral         — безопасное экранирование строк для dynamic SQL
@@ -51,6 +71,7 @@
     [5] dbo.tPermissionOverride    — исключения из матрицы (группа или юзер + база)
     [6] dbo.spProvisionUsers       — основная процедура (матрица + деprovision)
     [7] dbo.spProvisionOverrides   — процедура исключений (вызывается автоматически)
+    [8] dbo.spProvisionAiAgent     — завести сервисную учётку ИИ-агента разработчика
 
   В конце init-скрипта разово выполняется очистка tDatabases от баз,
   которых нет на этом сервере.
@@ -71,7 +92,7 @@
 -- СОЗДАНИЕ БАЗЫ ДАННЫХ
 -- Идемпотентно: пропускает если уже существует.
 --
--- Предохранитель на случай нехватки прав. Все объекты [0]–[8] создаются
+-- Предохранитель на случай нехватки прав. Все объекты [0]–[10] создаются
 -- в текущей базе контекста, поэтому если [DBAProvisioning] нет и создать
 -- её нельзя (нет CREATE ANY DATABASE), то без проверки USE молча упадёт,
 -- а весь остаток скрипта развернётся в master. Здесь такой прогон
@@ -204,18 +225,61 @@ BEGIN
                             'Dev Team',
                             'Data Engineer Team',
                             'QA',
-                            'Support Senior'
+                            'Support Senior',
+                            'AI Agent'
                         )),
         IsActive    BIT           NOT NULL DEFAULT 1,
         Notes       NVARCHAR(500) NULL,
         CreatedAt   DATETIME2     NOT NULL DEFAULT SYSDATETIME(),
         -- Один логин = одна строка. Дубликаты приведут к двойному провижну.
-        CONSTRAINT uq_upl_LoginName UNIQUE (LoginName)
+        CONSTRAINT uq_upl_LoginName UNIQUE (LoginName),
+        -- ИИ-агент — всегда SQL-логин. Доменной учётки у него быть не может:
+        -- пароль живёт в конфиге агента, а не у человека, и отзывается
+        -- сменой пароля этого логина, а не блокировкой в домене.
+        CONSTRAINT chk_upl_AiAgentIsSql CHECK (
+            Category <> 'AI Agent' OR LoginType = 'SQL'
+        )
     );
     PRINT 'OK: Таблица dbo.tUserProvisioningList создана.';
 END
 ELSE
     PRINT 'SKIP: dbo.tUserProvisioningList уже существует.';
+GO
+
+-- Миграция v5 -> v6 для уже развёрнутых установок: категория 'AI Agent'.
+-- Ограничение пересоздаётся только если в его определении ещё нет 'AI Agent',
+-- поэтому блок безопасно запускать повторно.
+IF EXISTS (
+    SELECT 1 FROM sys.check_constraints
+    WHERE  name             = 'chk_upl_Category'
+      AND  parent_object_id = OBJECT_ID('dbo.tUserProvisioningList')
+      AND  definition NOT LIKE '%AI Agent%'
+)
+BEGIN
+    ALTER TABLE dbo.tUserProvisioningList DROP CONSTRAINT chk_upl_Category;
+    ALTER TABLE dbo.tUserProvisioningList
+        ADD CONSTRAINT chk_upl_Category CHECK (Category IN (
+            'DB Admin', 'Dev Team', 'Data Engineer Team',
+            'QA', 'Support Senior', 'AI Agent'));
+    PRINT 'OK: chk_upl_Category расширен категорией AI Agent.';
+END
+ELSE
+    PRINT 'SKIP: chk_upl_Category уже знает AI Agent.';
+GO
+
+IF NOT EXISTS (
+    SELECT 1 FROM sys.check_constraints
+    WHERE  name             = 'chk_upl_AiAgentIsSql'
+      AND  parent_object_id = OBJECT_ID('dbo.tUserProvisioningList')
+)
+BEGIN
+    ALTER TABLE dbo.tUserProvisioningList
+        ADD CONSTRAINT chk_upl_AiAgentIsSql CHECK (
+            Category <> 'AI Agent' OR LoginType = 'SQL');
+    PRINT 'OK: chk_upl_AiAgentIsSql добавлен.';
+END
+ELSE
+    PRINT 'SKIP: chk_upl_AiAgentIsSql уже существует.';
 GO
 
 -- ====================================================================
@@ -258,7 +322,8 @@ BEGIN
                              'Dev Team',
                              'Data Engineer Team',
                              'QA',
-                             'Support Senior'
+                             'Support Senior',
+                             'AI Agent'
                          )),
         DbType       NVARCHAR(10) NOT NULL
                          CONSTRAINT chk_pm_DbType
@@ -278,6 +343,25 @@ BEGIN
 END
 ELSE
     PRINT 'SKIP: dbo.tPermissionMatrix уже существует — обновляем значения (MERGE).';
+GO
+
+-- Миграция v5 -> v6: категория 'AI Agent' в CHECK матрицы.
+IF EXISTS (
+    SELECT 1 FROM sys.check_constraints
+    WHERE  name             = 'chk_pm_Category'
+      AND  parent_object_id = OBJECT_ID('dbo.tPermissionMatrix')
+      AND  definition NOT LIKE '%AI Agent%'
+)
+BEGIN
+    ALTER TABLE dbo.tPermissionMatrix DROP CONSTRAINT chk_pm_Category;
+    ALTER TABLE dbo.tPermissionMatrix
+        ADD CONSTRAINT chk_pm_Category CHECK (Category IN (
+            'DB Admin', 'Dev Team', 'Data Engineer Team',
+            'QA', 'Support Senior', 'AI Agent'));
+    PRINT 'OK: chk_pm_Category расширен категорией AI Agent.';
+END
+ELSE
+    PRINT 'SKIP: chk_pm_Category уже знает AI Agent.';
 GO
 
 -- Миграция для уже существующих установок (v1 -> v2):
@@ -328,6 +412,9 @@ USING (
     ('QA',   'QA',                 'DEV',  'db_datareader|db_datawriter',  0,   1,  'Чтение + запись + VIEW'),
     ('QA',   'Support Senior',     'PROD', 'db_datareader',                0,   1,  'Только чтение + VIEW'),
     ('QA',   'Support Senior',     'DEV',  'db_datareader',                0,   1,  'Только чтение + VIEW'),
+    -- Сервисные учётки ИИ-агентов: чтение всех таблиц, ничего кроме чтения
+    ('QA',   'AI Agent',           'PROD', 'db_datareader',                0,   1,  'Только чтение + VIEW'),
+    ('QA',   'AI Agent',           'DEV',  'db_datareader',                0,   1,  'Только чтение + VIEW'),
 
     -- ═══════════════════════════════════════════════════════════════════════════════════
     -- PROD-сервер: все кроме DB Admin → только чтение + VIEW на prod-базах.
@@ -342,7 +429,10 @@ USING (
     ('PROD', 'QA',                 'PROD', 'db_datareader',                0,   1,  'PROD: только чтение + VIEW'),
     ('PROD', 'QA',                 'DEV',  'db_datareader|db_datawriter',  0,   1,  'Чтение + запись + VIEW'),
     ('PROD', 'Support Senior',     'PROD', 'db_datareader',                0,   1,  'PROD: только чтение + VIEW'),
-    ('PROD', 'Support Senior',     'DEV',  'db_datareader',                0,   1,  'Только чтение + VIEW')
+    ('PROD', 'Support Senior',     'DEV',  'db_datareader',                0,   1,  'Только чтение + VIEW'),
+    -- Сервисные учётки ИИ-агентов: чтение всех таблиц, ничего кроме чтения
+    ('PROD', 'AI Agent',           'PROD', 'db_datareader',                0,   1,  'PROD: только чтение + VIEW'),
+    ('PROD', 'AI Agent',           'DEV',  'db_datareader',                0,   1,  'Только чтение + VIEW')
     ) AS v (Env, Category, DbType, DbRoles, GrantExecute, GrantViewDefinition, Notes)
     WHERE v.Env = @Env
 ) AS S (Category, DbType, DbRoles, GrantExecute, GrantViewDefinition, Notes)
@@ -446,7 +536,7 @@ BEGIN
                                 CONSTRAINT chk_po_Category
                                 CHECK (Category IN (
                                     'DB Admin', 'Dev Team', 'Data Engineer Team',
-                                    'QA', 'Support Senior'
+                                    'QA', 'Support Senior', 'AI Agent'
                                 )),
         LoginName           NVARCHAR(256) NULL,
         DbName              NVARCHAR(128) NOT NULL,
@@ -468,6 +558,25 @@ BEGIN
 END
 ELSE
     PRINT 'SKIP: dbo.tPermissionOverride уже существует.';
+GO
+
+-- Миграция v5 -> v6: категория 'AI Agent' в CHECK исключений.
+IF EXISTS (
+    SELECT 1 FROM sys.check_constraints
+    WHERE  name             = 'chk_po_Category'
+      AND  parent_object_id = OBJECT_ID('dbo.tPermissionOverride')
+      AND  definition NOT LIKE '%AI Agent%'
+)
+BEGIN
+    ALTER TABLE dbo.tPermissionOverride DROP CONSTRAINT chk_po_Category;
+    ALTER TABLE dbo.tPermissionOverride
+        ADD CONSTRAINT chk_po_Category CHECK (Category IN (
+            'DB Admin', 'Dev Team', 'Data Engineer Team',
+            'QA', 'Support Senior', 'AI Agent'));
+    PRINT 'OK: chk_po_Category расширен категорией AI Agent.';
+END
+ELSE
+    PRINT 'SKIP: chk_po_Category уже знает AI Agent.';
 GO
 
 -- Уникальность: одно исключение на группу+база, одно на юзера+база.
@@ -548,6 +657,7 @@ BEGIN
         @ActualExec   BIT,             -- фактически выдан ли EXECUTE
         @ActualViewDef BIT,            -- фактически выдан ли VIEW DEFINITION
         @NeedsChange  BIT,             -- отличается ли факт от желаемого состояния
+        @DesiredEmpty BIT,             -- по матрице в этой базе не положено вообще ничего
         @LogStatus    NVARCHAR(20),
         @Prefix       NVARCHAR(10),
         @RunId        UNIQUEIDENTIFIER;
@@ -749,6 +859,31 @@ BEGIN
                 CONTINUE;
             END
 
+            -- ── Пара «пользователь + база» закрыта исключением? ───────
+            --    Тогда матрица к ней не применяется: авторитет —
+            --    tPermissionOverride, и spProvisionOverrides отработает эту
+            --    пару сразу после основного прохода, под тем же RunId.
+            --    Без пропуска каждый прогон моргал бы: сначала матрица
+            --    снимает права, которых по ней быть не должно, следом
+            --    исключение выдаёт их заново — лишние строки в журнале и
+            --    окно, в котором доступа нет.
+            --    Для деактивированных пропуска нет: spProvisionOverrides их
+            --    не видит (JOIN ... IsActive = 1), отзыв делает этот проход.
+            IF @IsUserActive = 1
+               AND EXISTS (
+                   SELECT 1
+                   FROM   dbo.tPermissionOverride o
+                   WHERE  o.IsActive = 1
+                     AND  o.DbName   = @DbName
+                     AND (o.LoginName = @LoginName OR o.Category = @Category)
+               )
+            BEGIN
+                PRINT @Prefix + N'  [~] ' + @DbName
+                    + N' -> ведётся исключением (tPermissionOverride), матрица пропущена.';
+                FETCH NEXT FROM cur_DB INTO @DbName, @IsDev;
+                CONTINUE;
+            END
+
             BEGIN TRY
                 -- ── Определяем тип базы для матрицы прав ────────────
                 SET @DbType = CASE WHEN @IsDev = 1 THEN N'DEV' ELSE N'PROD' END;
@@ -801,6 +936,20 @@ BEGIN
                 SET @HasReader = CASE WHEN CHARINDEX(N'|db_datareader|',  @PaddedRoles) > 0 THEN 1 ELSE 0 END;
                 SET @HasWriter = CASE WHEN CHARINDEX(N'|db_datawriter|',  @PaddedRoles) > 0 THEN 1 ELSE 0 END;
 
+                -- По матрице в этой базе не положено ничего: ни роли, ни
+                -- EXECUTE, ни VIEW DEFINITION. Тогда и заводить принципала
+                -- незачем — пустой пользователь получил бы CONNECT и право
+                -- подключиться к базе, из которой всё равно ничего не видно.
+                -- Так выглядит любая строка матрицы с пустым DbRoles, а также
+                -- сужение агента до одной базы через исключения (см. конец файла).
+                -- Уже существующего пользователя это не трогает: если права
+                -- у него есть, а по матрице их быть не должно, ниже сработает
+                -- обычная сверка и @CleanupSQL их отзовёт.
+                SET @DesiredEmpty = CASE WHEN @HasOwner = 0 AND @HasReader = 0
+                                          AND @HasWriter = 0 AND @GrantExec = 0
+                                          AND @GrantViewDef = 0
+                                     THEN 1 ELSE 0 END;
+
                 -- ══════════════════════════════════════════════════════
                 -- Сверяем желаемое состояние с фактическим ДО того как
                 -- что-либо строить/выполнять. Если всё уже совпадает —
@@ -837,7 +986,7 @@ BEGIN
                     @UserExists OUTPUT, @IsOrphaned OUTPUT, @ActualOwner OUTPUT, @ActualReader OUTPUT, @ActualWriter OUTPUT, @ActualExec OUTPUT, @ActualViewDef OUTPUT;
 
                 SET @NeedsChange = CASE WHEN
-                       (@IsUserActive = 1 AND @UserExists = 0)
+                       (@IsUserActive = 1 AND @UserExists = 0 AND @DesiredEmpty = 0)
                     OR (@UserExists = 1 AND @IsOrphaned = 1)
                     OR (@ActualOwner   <> @HasOwner)
                     OR (@ActualReader  <> @HasReader)
@@ -848,7 +997,10 @@ BEGIN
 
                 IF @NeedsChange = 0
                 BEGIN
-                    PRINT @Prefix + N'  [=] ' + @DbName + N' (' + @DbType + N') -> уже соответствует желаемому состоянию, пропуск.';
+                    IF @IsUserActive = 1 AND @DesiredEmpty = 1 AND @UserExists = 0
+                        PRINT @Prefix + N'  [ ] ' + @DbName + N' (' + @DbType + N') -> по матрице ничего не положено, пользователь не заводится.';
+                    ELSE
+                        PRINT @Prefix + N'  [=] ' + @DbName + N' (' + @DbType + N') -> уже соответствует желаемому состоянию, пропуск.';
                     FETCH NEXT FROM cur_DB INTO @DbName, @IsDev;
                     CONTINUE;
                 END
@@ -1369,7 +1521,119 @@ END
 GO
 
 -- ====================================================================
--- [8] ОЧИСТКА СПИСКА БАЗ (разовый прогон)
+-- [8] ПРОЦЕДУРА: УЧЁТКА ИИ-АГЕНТА
+--     Заводит сервисную учётку категории [AI Agent] — по одной
+--     на разработчика. Права берутся из матрицы: db_datareader
+--     во всех базах из tDatabases.
+--
+--     Зачем процедура, а не INSERT руками: она следит, чтобы учётка
+--     была именно SQL-логином категории [AI Agent], чинит запись,
+--     если её завели неправильно, и снимает личные исключения, если
+--     они на этом логине откуда-то остались. Последнее важно: молча
+--     висящее исключение с пустыми правами закрывает агенту базу,
+--     и выглядит это как «доступ есть, а данных не видно».
+--
+--     Процедура ТОЛЬКО правит таблицы конфигурации. На сервере не
+--     меняется ничего, пока не будет запущена spProvisionUsers —
+--     она и создаст логин, и разложит права.
+-- ====================================================================
+CREATE OR ALTER PROCEDURE dbo.spProvisionAiAgent
+    @LoginName NVARCHAR(256),          -- svc_ai_<фамилия>
+    @Password  NVARCHAR(256) = NULL,   -- обязателен только при заведении новой учётки
+    @Notes     NVARCHAR(500) = NULL,
+    @DryRun    BIT           = 0       -- 1 → показать, что будет вписано, и ничего не менять
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @Prefix    NVARCHAR(10) = CASE WHEN @DryRun = 1 THEN N'[DRY] ' ELSE N'' END,
+            @IsNew     BIT,
+            @Overrides INT;
+
+    IF ISNULL(LTRIM(RTRIM(@LoginName)), N'') = N''
+        THROW 50010, 'Не указан логин учётной записи агента.', 1;
+
+    SET @IsNew = CASE WHEN EXISTS (SELECT 1 FROM dbo.tUserProvisioningList
+                                   WHERE LoginName = @LoginName) THEN 0 ELSE 1 END;
+
+    -- Пароль нужен только при заведении: у существующей учётки он уже
+    -- затёрт в NULL после первого успешного прогона, и это норма.
+    IF @IsNew = 1 AND ISNULL(@Password, N'') = N''
+        THROW 50012, 'Новой учётной записи нужен пароль: @Password обязателен при первом заведении.', 1;
+
+    SELECT @Overrides = COUNT(*)
+    FROM   dbo.tPermissionOverride
+    WHERE  LoginName = @LoginName AND IsActive = 1;
+
+    PRINT N'';
+    PRINT N'=============================================================';
+    PRINT @Prefix + N'spProvisionAiAgent  |  ' + @LoginName;
+    PRINT N'=============================================================';
+
+    IF @DryRun = 1
+    BEGIN
+        PRINT N'  Учётная запись: ' + CASE WHEN @IsNew = 1 THEN N'будет заведена' ELSE N'уже есть, будет обновлена' END;
+        PRINT N'  Права: по матрице категории [AI Agent] — db_datareader во всех базах из tDatabases.';
+        IF @Overrides > 0
+            PRINT N'  Личные исключения (' + CAST(@Overrides AS NVARCHAR(10)) + N' шт.) будут сняты.';
+        SELECT d.DbName, d.IsDev
+        FROM   dbo.tDatabases d
+        WHERE  d.IsActive = 1
+        ORDER  BY d.DbName;
+        RETURN;
+    END
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        IF @IsNew = 1
+        BEGIN
+            INSERT INTO dbo.tUserProvisioningList (LoginName, LoginType, SqlPassword, Category, Notes)
+            VALUES (@LoginName, N'SQL', @Password, N'AI Agent',
+                    ISNULL(@Notes, N'ИИ-агент разработчика, read-only'));
+            PRINT N'  [+] Учётная запись заведена.';
+        END
+        ELSE
+        BEGIN
+            UPDATE dbo.tUserProvisioningList
+            SET    Category    = N'AI Agent',
+                   LoginType   = N'SQL',
+                   IsActive    = 1,
+                   SqlPassword = COALESCE(@Password, SqlPassword),
+                   Notes       = COALESCE(@Notes, Notes)
+            WHERE  LoginName = @LoginName;
+            PRINT N'  [=] Учётная запись уже была, обновлена.';
+        END
+
+        -- Личные исключения агенту не нужны: права даёт матрица категории.
+        -- Оставшееся от прежних настроек снимаем, иначе исключение с пустыми
+        -- правами тихо закроет базу, а выглядеть это будет как баг доступа.
+        IF @Overrides > 0
+        BEGIN
+            DELETE FROM dbo.tPermissionOverride WHERE LoginName = @LoginName;
+            PRINT N'  [-] Снято личных исключений: ' + CAST(@Overrides AS NVARCHAR(10)) + N'.';
+        END
+
+        COMMIT TRANSACTION;
+
+        PRINT N'';
+        PRINT N'  Осталось применить:  EXEC dbo.spProvisionUsers @DryRun = 1;';
+        PRINT N'                       EXEC dbo.spProvisionUsers @DryRun = 0;';
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH;
+
+    SELECT LoginName, Category, LoginType, IsActive,
+           CASE WHEN SqlPassword IS NULL THEN N'затёрт' ELSE N'ждёт прогона' END AS Пароль, Notes
+    FROM   dbo.tUserProvisioningList
+    WHERE  LoginName = @LoginName;
+END
+GO
+
+-- ====================================================================
+-- [9] ОЧИСТКА СПИСКА БАЗ (разовый прогон)
 --     Удаляет из tDatabases записи о базах которых нет на этом сервере.
 --
 --     Зачем: spProvisionUsers и так молча пропускает несуществующие базы
@@ -1399,7 +1663,7 @@ PRINT 'OK: dbo.tDatabases очищена — удалено записей: ' + 
 GO
 
 -- ====================================================================
--- [9] ИТОГ ЗАПУСКА
+-- [10] ИТОГ ЗАПУСКА
 --     Снимает NOEXEC (иначе сессия останется «немой» и следующие запросы
 --     будут молча ничего не делать) и печатает результат.
 -- ====================================================================
@@ -1562,6 +1826,89 @@ EXEC [DBAProvisioning].dbo.spProvisionOverrides @DryRun = 0;
 --   1. DELETE FROM [DBAProvisioning].dbo.tPermissionMatrix;
 --   2. Поменяй @Env вверху файла и перезапусти init-скрипт
 --   3. EXEC [DBAProvisioning].dbo.spProvisionUsers @DryRun = 0;
+
+
+-- ════════════════════════════════════════════════════════════════════
+-- СЕРВИСНЫЕ УЧЁТКИ ДЛЯ ИИ-АГЕНТОВ  (категория [AI Agent])
+-- ════════════════════════════════════════════════════════════════════
+--
+-- Категория даёт чтение: db_datareader + VIEW DEFINITION на PROD и DEV,
+-- то есть SELECT на все таблицы и вьюхи каждой базы из tDatabases,
+-- включая те, что появятся позже. EXECUTE не выдаётся — процедура умеет
+-- писать. В [sysadmin] такая учётка не попадает никогда, логин обязан
+-- быть SQL (CHECK chk_upl_AiAgentIsSql).
+--
+-- МОДЕЛЬ ДОСТУПА: одна учётка на разработчика, svc_ai_<фамилия>.
+--
+-- Один человек — один логин, один пароль, все контуры. Разбор бага
+-- начинается с задачи, а не с контура: клиент выясняется по ходу, и
+-- отдельная пара логин-пароль под каждую базу означала бы, что половина
+-- разборов упирается в «а этот профиль я не заводил».
+--
+-- Что при этом остаётся: в аудите MSSQL видно, кто именно читал данные
+-- (логин персональный), и отзывается доступ одной строкой при увольнении.
+-- Чем платим: утёкшая пара открывает все контуры сразу. Поэтому учётка
+-- личная и не передаётся коллеге, а пароль живёт в Keychain, а не в чате.
+--
+-- ── Где заведены агенты ──────────────────────────────────────────────
+-- Готовый список всех разработчиков с логинами и паролями лежит рядом:
+--   seed-ai-agents.sql          — рабочий файл, в .gitignore, пароли настоящие
+--   seed-ai-agents.example.sql  — шаблон в git, пароли плейсхолдерами
+-- Прогонять его после этого файла. Ниже — та же операция поштучно.
+--
+-- ── Завести агента вручную ───────────────────────────────────────────
+-- Пароль сгенерируй отдельно, сюда не вписывай и не коммить: после первого
+-- успешного прогона spProvisionUsers затрёт его в NULL.
+EXEC dbo.spProvisionAiAgent
+     @LoginName = 'svc_ai_ippolitov',
+     @Password  = '<сгенерированный-пароль>',
+     @DryRun    = 1;          -- посмотреть, что будет вписано
+
+EXEC dbo.spProvisionAiAgent
+     @LoginName = 'svc_ai_ippolitov',
+     @Password  = '<сгенерированный-пароль>';
+
+-- Процедура правит только таблицы конфигурации. Права на сервере разложит
+-- обычный прогон:
+EXEC [DBAProvisioning].dbo.spProvisionUsers @DryRun = 1;
+EXEC [DBAProvisioning].dbo.spProvisionUsers @DryRun = 0;
+
+-- ── Проверить ────────────────────────────────────────────────────────
+-- Все агенты списком:
+SELECT LoginName, IsActive, Notes
+FROM   dbo.tUserProvisioningList
+WHERE  Category = 'AI Agent'
+ORDER  BY LoginName;
+
+-- Что учётка реально получила в базах (по факту, а не по таблицам):
+SELECT L.Scope AS DbName, L.Action, L.Status, LEFT(ISNULL(L.Details,''),200) AS Details
+FROM   dbo.tUserProvisioningLog L
+WHERE  L.LoginName = 'svc_ai_ippolitov'
+ORDER  BY L.Id DESC;
+
+-- ── Отозвать при увольнении ──────────────────────────────────────────
+UPDATE dbo.tUserProvisioningList SET IsActive = 0 WHERE LoginName = 'svc_ai_ippolitov';
+EXEC [DBAProvisioning].dbo.spProvisionUsers @DryRun = 0;
+
+-- Смена пароля (утечка, ротация) — мимо этой системы, напрямую:
+-- ALTER LOGIN [svc_ai_ippolitov] WITH PASSWORD = N'<новый-пароль>';
+
+-- ── Подстройка прав всей категории ───────────────────────────────────
+-- Убрать VIEW DEFINITION (агенты перестанут видеть текст вьюх и процедур):
+UPDATE dbo.tPermissionMatrix
+SET    GrantViewDefinition = 0, UpdatedAt = SYSDATETIME()
+WHERE  Category = 'AI Agent';
+
+-- ── Если конкретного агента всё же надо сузить ───────────────────────
+-- Механизм есть, но это не норма, а исключение под причину. Личные
+-- исключения: нужной базе db_datareader, остальным пустые права.
+-- Учти: spProvisionAiAgent при следующем вызове их снимет — она считает,
+-- что агенту исключения не нужны.
+-- INSERT INTO dbo.tPermissionOverride (LoginName, DbName, DbRoles, GrantExecute, GrantViewDefinition, Notes)
+-- SELECT 'svc_ai_ippolitov', d.DbName,
+--        CASE WHEN d.DbName = '<база>' THEN 'db_datareader' ELSE '' END, 0,
+--        CASE WHEN d.DbName = '<база>' THEN 1 ELSE 0 END, '<причина сужения>'
+-- FROM   dbo.tDatabases d WHERE d.IsActive = 1;
 
 
 -- ── Очистка списка баз (при необходимости повторить) ─────────────────
