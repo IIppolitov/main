@@ -266,13 +266,27 @@ def url_of(key):
 
 # --- модель дерева ---------------------------------------------------------------
 class Tree:
-    def __init__(self, root, links, subtasks):
+    """Дерево задачи на два уровня.
+
+    Второй уровень появился вместе с багрепортами: по этапу 11 (4.5.2) дефект
+    по доработке заводится подзадачей той подзадачи «Разработка», в которой она
+    сделана. Правила состава и оценки смотрят только на первый уровень —
+    подзадачи «Разработка» и «Тестирование» там и живут; правила по багрепортам
+    и закрытию обходят оба (`all_tasks`).
+    """
+
+    def __init__(self, root, links, subtasks, nested):
         self.root = root
         self.links = links            # [(rel, direction, key, display)]
-        self.subtasks = subtasks      # [issue]
+        self.subtasks = subtasks      # [issue] — первый уровень
+        self.nested = nested          # [issue] — второй уровень
         self.by_type = {}
         for st in subtasks:
             self.by_type.setdefault(st["type"]["key"], []).append(st)
+
+    @property
+    def all_tasks(self):
+        return self.subtasks + self.nested
 
     def of_type(self, *keys):
         out = []
@@ -289,7 +303,7 @@ class Tree:
         основная задача — приёмку клиентом подтверждает она, а не подзадачи.
         """
         stages = [1]
-        for issue in [self.root] + self.subtasks:
+        for issue in [self.root] + self.all_tasks:
             key = issue["status"]["key"]
             if key in CLOSED_STATUSES:
                 if key != "cancelled":
@@ -325,7 +339,16 @@ def load_tree(key):
     sub_keys = [k for rel, d, k, _ in rows if rel == "subtask" and d == "outward"]
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
         subtasks = list(pool.map(lambda k: api(f"issues/{k}"), sub_keys))
-    return Tree(root, rows, subtasks)
+
+        # Второй уровень. Глубже не идём: регламент двух уровней и не описывает,
+        # а бесконечный обход на чужой вложенности стоил бы десятков запросов.
+        def children(key):
+            return [l["object"]["key"] for l in api(f"issues/{key}/links")
+                    if l["type"]["id"] == "subtask" and l.get("direction") == "outward"]
+
+        nested_keys = [k for ks in pool.map(children, sub_keys) for k in ks]
+        nested = list(pool.map(lambda k: api(f"issues/{k}"), nested_keys))
+    return Tree(root, rows, subtasks, nested)
 
 
 # --- каталог правил ---------------------------------------------------------------
@@ -370,7 +393,7 @@ def _n2(t):
 def _n3(t):
     root_tag = tag_mnemonic(t.root)
     out = []
-    for st in t.subtasks:
+    for st in t.all_tasks:
         tag = tag_mnemonic(st)
         if not tag:
             out.append((st["key"], "нет тега с мнемоникой клиента"))
@@ -623,14 +646,14 @@ def _e7(t):
 
 
 # --- Б: багрепорты --------------------------------------------------------------
-@rule("Б-1", "error", 11, "Багрепорт по дефекту задачи привязан подзадачей, а не связью",
+@rule("Б-1", "error", 11, "Багрепорт привязан подзадачей, а не связью relates",
       "11-testirovanie-i-revju.md, 4.5.2")
 def _b1(t):
     """Связь `relates` ничего не держит: багрепорт не попадает в дерево и не
     мешает закрыть основную задачу с невыправленным дефектом (этап 14, 5)."""
-    return [(k, "багрепорт привязан связью relates — по 4.5.2 дефект по этой задаче "
-                "заводится подзадачей основной задачи; дефект в функционале вообще — "
-                "самостоятельной задачей с привязкой к проекту релиза, без relates")
+    return [(k, "багрепорт привязан связью relates — по 4.5.2 дефект по доработке "
+                "заводится подзадачей своей подзадачи «Разработка»; дефект в функционале "
+                "вообще — самостоятельной задачей с привязкой к проекту релиза, без relates")
             for rel, d, k, _ in t.links
             if rel == "relates" and k.startswith("BUGREPORTS-")]
 
@@ -639,23 +662,30 @@ def _b1(t):
       "11-testirovanie-i-revju.md, 4.5.4")
 def _b2(t):
     return [(st["key"], f"тип «{st['type']['display']}», у багрепорта ожидается «Ошибка»")
-            for st in t.subtasks
+            for st in t.all_tasks
             if st["queue"]["key"] == "BUGREPORTS" and st["type"]["key"] != "bug"]
 
 
-@rule("Б-4", "error", 11, "Багрепорт-подзадача заведён к основной задаче, а не к подзадаче",
-      "11-testirovanie-i-revju.md, 4.5.2; 05-ocenka-zadachi.md, 4.3")
+@rule("Б-4", "error", 11, "Родитель багрепорта — подзадача «Разработка», а не основная задача",
+      "11-testirovanie-i-revju.md, 4.5.2")
 def _b4(t):
-    """Подзадачи образуют плоский список: второго уровня вложенности регламент
-    не предусматривает, и он ломает и отчёт по спринту, и закрытие по этапу 14."""
+    """«Дефект в задаче CRM-131» не адресует ничего: подзадач «Разработка» у
+    задачи бывает десяток, а чинить надо конкретную доработку."""
+    dev = {st["key"] for st in t.of_type("development")}
     out = []
-    for st in t.subtasks:
+    for st in t.all_tasks:
         if st["queue"]["key"] != "BUGREPORTS":
             continue
         parent = (st.get("parent") or {}).get("key", "")
-        if parent and parent != t.root["key"]:
-            out.append((st["key"], f"родитель — {parent}, а должна быть основная задача "
-                                   f"{t.root['key']}: подзадачи образуют плоский список"))
+        if parent in dev:
+            continue
+        if parent == t.root["key"]:
+            out.append((st["key"], "родитель — основная задача; по 4.5.2 багрепорт по "
+                                   "доработке заводится подзадачей той подзадачи "
+                                   "«Разработка», в которой она сделана"))
+        elif parent:
+            out.append((st["key"], f"родитель — {parent}: это не подзадача «Разработка» "
+                                   f"дерева {t.root['key']}"))
     return out
 
 
@@ -665,7 +695,7 @@ def _b3(t):
     if t.root["status"]["key"] not in CLOSED_STATUSES:
         return []
     return [(st["key"], "багрепорт открыт, а основная задача уже закрыта")
-            for st in t.subtasks
+            for st in t.all_tasks
             if st["queue"]["key"] == "BUGREPORTS" and st["status"]["key"] not in CLOSED_STATUSES]
 
 
@@ -674,7 +704,7 @@ def _b3(t):
 def _b5(t):
     return [(st["key"], "исполнитель не назначен: по 4.5.4 багрепорт назначается "
                         "на тимлида команды, в чьей зоне дефект")
-            for st in t.subtasks
+            for st in t.all_tasks
             if st["queue"]["key"] == "BUGREPORTS"
             and st["status"]["key"] not in CLOSED_STATUSES
             and not st.get("assignee")]
@@ -727,7 +757,7 @@ def _f1(t):
         return []
     return [(st["key"], f"подзадача открыта («{st['status']['display']}»), "
                         "а основная задача закрыта")
-            for st in t.subtasks if st["status"]["key"] not in CLOSED_STATUSES]
+            for st in t.all_tasks if st["status"]["key"] not in CLOSED_STATUSES]
 
 
 # --- прогон ------------------------------------------------------------------------
@@ -749,10 +779,12 @@ def run_rules(tree, stage):
 
 def tree_rows(tree):
     rows = []
-    for st in [tree.root] + tree.subtasks:
+    for st in [tree.root] + tree.subtasks + tree.nested:
+        nested = st in tree.nested
         rows.append({
-            "key": st["key"],
-            "role": "основная" if st is tree.root else "подзадача",
+            "key": ("└ " if nested else "") + st["key"],
+            "role": "основная" if st is tree.root else ("подзадача 2-го уровня" if nested else "подзадача"),
+            "parent": (st.get("parent") or {}).get("key", ""),
             "type": st["type"]["display"],
             "status": st["status"]["display"],
             "component": ", ".join(components_of(st)),
