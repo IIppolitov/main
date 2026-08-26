@@ -59,6 +59,8 @@ DevOps (технический директор Улич Дмитрий), тех
 Полный состав с контактами — [docs/company/org-structure.md](docs/company/org-structure.md).
 Разбор ИТ-департамента, привязка команд к продуктам и разрывы —
 [docs/company/it-department.md](docs/company/it-department.md).
+Рабочие чаты и рассылки — куда что писать и кто прочитает —
+[docs/company/channels.md](docs/company/channels.md).
 
 Роли доступа к БД (`DB Admin`, `Dev Team`, `Data Engineer Team`, `QA`,
 `Support Senior`) заданы в
