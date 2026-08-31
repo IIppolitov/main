@@ -8,6 +8,8 @@
    git commit` — нет.
 2. `git checkout <путь>` и `git checkout -- <путь>` — блок: это откат рабочего дерева,
    неотличимый префиксом от безобидного `git checkout <ветка>`. Переключение ветки проходит.
+2а. `git commit --amend` поверх уже запушенного коммита — блок: amend переписывает
+   опубликованную историю. Пока коммит только локальный, amend разрешён.
 3. `git commit`, когда в индексе лежит гитлинк сабмодуля (mode 160000) — блок.
    Указатели модулей в проектах с сабмодулями намеренно не ведут (`ignore = all`
    в .gitmodules), закоммиченный указатель на непушенный коммит ломает
@@ -107,6 +109,15 @@ def git_output(repo_dir, args):
 def current_branch(repo_dir):
     out = git_output(repo_dir, ["branch", "--show-current"])
     return None if out is None else out.strip()
+
+
+def published_in(repo_dir):
+    """Ветки на remote, содержащие текущий HEAD. Непусто — коммит уже опубликован."""
+    out = git_output(repo_dir, ["branch", "-r", "--contains", "HEAD"])
+    if not out:
+        return []
+    return [line.strip() for line in out.splitlines()
+            if line.strip() and "->" not in line]
 
 
 def is_ref(repo_dir, name):
@@ -277,6 +288,36 @@ def check_reset(args):
         )
 
 
+def check_amend(repo_dir, args):
+    """`--amend` поверх уже запушенного коммита переписывает опубликованную историю.
+
+    Пока коммит лежит только локально, amend безобиден и разрешён: прежняя версия
+    остаётся в reflog. Как только коммит ушёл на remote, amend перестаёт быть правкой
+    и становится подменой: у всех, кто уже подтянул, остаётся старая версия, а вернуть
+    ветку в согласованное состояние можно только force-пушем.
+
+    Префиксом это условие не выразить: оно не про команду, а про то, где сейчас HEAD.
+
+    ⚠️ Проверка опирается на локальные refs `origin/*` и потому видит только пуши,
+    известные этому клону. Пуш, сделанный из другого клона и не подтянутый сюда,
+    она не заметит — на такой случай остаётся текстовое правило в CLAUDE.md.
+    """
+    if "--amend" not in args:
+        return
+
+    remotes = published_in(repo_dir)
+    if remotes:
+        block(
+            "`git commit --amend` заблокирован: этот коммит уже опубликован — он есть в {}.\n"
+            "Amend не правит коммит, а создаёт новый вместо него: локальная ветка разойдётся\n"
+            "с серверной, и свести их можно будет только force-пушем.\n\n"
+            "Положи правку следующим коммитом поверх: git add <пути> && git commit -m \"...\".\n"
+            "Пока коммит не запушен, amend разрешён — здесь не тот случай.\n".format(
+                ", ".join(remotes[:3]) + (" и др." if len(remotes) > 3 else "")
+            )
+        )
+
+
 def check_commit(repo_dir, branch):
     if branch == "":
         block(
@@ -390,6 +431,8 @@ def main():
             else:
                 branch_after[repo_dir] = target
             continue
+
+        check_amend(repo_dir, args)
 
         branch = branch_after.get(repo_dir)
         if branch is None:
