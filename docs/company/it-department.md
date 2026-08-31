@@ -125,7 +125,7 @@ TODO: решить, что это — осознанный временный р
 
 ## Роли доступа к БД
 
-В [DBAProvisioning](../../automation/sql/DBAProvisioning/init.sql) заведены
+В системе провижининга доступов (`../pbe-dba/sql/provisioning/init.sql`) заведены
 категории: `DB Admin`, `Dev Team`, `Data Engineer Team`, `QA`, `Support Senior`,
 `AI Agent`.
 
@@ -199,7 +199,7 @@ TODO: решить, что это — осознанный временный р
 это `DENY SELECT` на уровне БД, и она в долге (И-11).
 
 Сужение конкретной учётки до одного контура механизмом поддержано (личные
-исключения, рецепт в конце [init.sql](../../automation/sql/DBAProvisioning/init.sql)),
+исключения, рецепт в конце `init.sql` в `../pbe-dba/sql/provisioning/`),
 но это исключение под причину, а не норма. Норма по контурам остаётся у BI:
 там учётные записи под витрины изолируются отдельно, см. Д-1 в
 [долге](../backlog.md).

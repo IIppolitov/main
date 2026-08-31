@@ -25,7 +25,7 @@
 # [AI Agent] это db_datareader и ничего кроме. Держать её такой — обязанность
 # того, кто ведёт матрицу доступов, а не этого файла.
 # Проверить, что учётки действительно read-only:
-#   automation/sql/DBAProvisioning/check-ai-agents.sql
+#   ../pbe-dba/sql/provisioning/check-ai-agents.sql
 #
 # ПРОФИЛИ — просто список клиентов, ~/.config/pbe-mssql/, chmod 600.
 #

@@ -45,8 +45,8 @@
 согласие на другой ID врача, вернуть согласие в статус «Собрано», обновить ФИО
 в базе, разобраться с аптеками, ушедшими в архив.
 
-Это объясняет права категории `Data Engineer Team` в
-[матрице доступов](../../automation/sql/DBAProvisioning/init.sql):
+Это объясняет права категории `Data Engineer Team` в матрице доступов
+(`../pbe-dba/sql/provisioning/init.sql`):
 `db_datareader` + `db_datawriter` + EXECUTE на PROD. Права соответствуют работе.
 
 ### 4. Разовые выгрузки и запросы
