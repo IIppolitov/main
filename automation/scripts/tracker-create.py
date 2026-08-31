@@ -25,6 +25,13 @@
     ./tracker-create.py crm-testirovanie      задача.md --parent CRM-1121 --apply
     ./tracker-create.py crm-reliz             задача.md --parent CRM-1121 --apply
 
+Дефекты заводятся пресетами bugreport-* и supportdev-*. Очередь между ними
+выбирается одним признаком — вышла ли задача на прод: до прода BUGREPORTS,
+после SUPPORTDEV. Мнемоника клиента обязательна в обеих, отсюда --client.
+
+    ./tracker-create.py bugreport-admin  дефект.md --client VLT --parent CRM-1651 --apply
+    ./tracker-create.py supportdev-app   дефект.md --client BAY --apply
+
 Оценка одна на два поля: Трекер хранит «Оценку» и «Первоначальную оценку»
 отдельно, а в отчётах по спринту нужны обе. Не указана — не заполняется
 ни одна: пустая оценка это открытый вопрос, а не ноль.
@@ -72,6 +79,60 @@ PRESETS: dict[str, dict] = {
         "components": [],
         "tags": [],
         "prefix": None,
+    },
+
+    # Дефекты. Очередь определяется одним признаком — вышла ли задача на прод
+    # (описание очередей, «Граница между BUGREPORTS и очередями поддержки»).
+    # До прода — BUGREPORTS, после — SUPPORTDEV. Клиентская мнемоника
+    # обязательна в обоих, поэтому "client_required".
+    #
+    # Тип в BUGREPORTS — «Ошибка» (этап 11, 4.5.4). В SUPPORTDEV такого типа
+    # НЕТ: очередь предлагает только «Инцидент» и «Информационный запрос»,
+    # и это не упущение пресета — сверено с Трекером 2026-08-31.
+    "bugreport-admin": {
+        "queue": "BUGREPORTS",
+        "type": "bug",                  # Ошибка
+        "components": ["Администрирование"],
+        "tags": [],
+        "prefix": None,
+        "client_required": True,
+        "client_prefix": True,          # «VLT Не удаляются специальности…»
+        "assignee": "aseleznev",        # тимлид админок, этап 11, 4.5.4
+        "warn_no_parent": True,
+    },
+    "bugreport-app": {
+        "queue": "BUGREPORTS",
+        "type": "bug",                  # Ошибка
+        "components": ["Приложение"],
+        "tags": [],
+        "prefix": None,
+        "client_required": True,
+        "client_prefix": True,
+        "assignee": "spetrovicheva",    # тимлид приложения, этап 11, 4.5.4
+        "warn_no_parent": True,
+    },
+    # У задач поддержки название идёт по своему шаблону —
+    # «[Клиент]. [Компонент]. [Описание]» (процесс техподдержки, этап 2),
+    # поэтому мнемоника здесь только тегом: "client_prefix": False.
+    # Исполнителя не назначаем: кому чинить и хотфиксом или спринтом,
+    # решает разбор беклога поддержки (этап 4), а не автор задачи.
+    "supportdev-admin": {
+        "queue": "SUPPORTDEV",
+        "type": "incident",             # Инцидент
+        "components": ["Администрирование"],
+        "tags": [],
+        "prefix": None,
+        "client_required": True,
+        "client_prefix": False,
+    },
+    "supportdev-app": {
+        "queue": "SUPPORTDEV",
+        "type": "incident",             # Инцидент
+        "components": ["Приложение"],
+        "tags": [],
+        "prefix": None,
+        "client_required": True,
+        "client_prefix": False,
     },
 
     # Подзадачи этапов жизненного цикла задачи CRM. Отличаются от пресетов
@@ -144,6 +205,30 @@ PRESETS: dict[str, dict] = {
         "tags": [],
         "prefix": None,
     },
+}
+
+# Клиентские мнемоники — «Описание очередей», раздел «Клиентская мнемоника
+# и Теги». Тег с мнемоникой обязателен в любой очереди, поэтому список лежит
+# здесь, а не в командах: опечатка в теге не ломает создание задачи, она
+# просто выкидывает её из всех клиентских фильтров.
+MNEMONICS: dict[str, str] = {
+    "PBE": "Powbee (мы сами)",
+    "ALCEA": "Алцея",
+    "ALP": "Альпен Фарма",
+    "AVX": "Авексима",
+    "BAY": "Байер",
+    "BAYBY": "Байер РБ",
+    "BSN": "Безен",
+    "BRG": "Бинергия",
+    "BOE": "Берингер Ингельхайм",
+    "CHS": "Кьези Фармасьютикалс",
+    "MAY": "Майоли Фарма",
+    "PRM": "Примафарма",
+    "ROC": "РОШ",
+    "SAL": "Сэлвим",
+    "SRV": "Сервье",
+    "VLT": "Валента",
+    "XNS": "Ксантис",
 }
 
 H1_RE = re.compile(r"^#\s+(.+?)\s*$")
@@ -231,6 +316,32 @@ def parse_duration(raw: str) -> str:
     time = f"{h}H" if h else ""
     time += f"{mi}M" if mi else ""
     return "P" + date + (f"T{time}" if time else "")
+
+
+def resolve_client(raw: str | None, preset: dict, force: bool) -> str | None:
+    """Мнемоника клиента: проверенная по справочнику, в верхнем регистре.
+
+    Тег с мнемоникой обязателен в любой очереди («Описание очередей»),
+    и цена ошибки тут несимметричная: неверная мнемоника задачу не ломает,
+    она молча выкидывает её из клиентских фильтров и отчётов. Поэтому
+    неизвестное значение — отказ, а не предупреждение; обойти можно --force,
+    когда клиент новый и в справочник ещё не внесён.
+    """
+    if not raw:
+        if preset.get("client_required"):
+            raise ValueError(
+                "этот пресет требует --client: без мнемоники клиента дефект "
+                "не попадёт ни в один клиентский фильтр. "
+                f"Мнемоники: {', '.join(sorted(MNEMONICS))}")
+        return None
+
+    client = raw.strip().upper()
+    if client not in MNEMONICS and not force:
+        raise ValueError(
+            f"«{raw}» нет в справочнике мнемоник. "
+            f"Есть: {', '.join(sorted(MNEMONICS))}. "
+            f"Клиент новый — добавь его в MNEMONICS или разово обойди --force")
+    return client
 
 
 def build_summary(title: str, prefix: str | None) -> str:
@@ -336,6 +447,10 @@ def main() -> int:
                     help="дополнительный тег к тегам пресета; ключ можно "
                          "повторить. Мнемоника клиента живёт здесь, а не в "
                          "пресете: пресет один на все клиенты")
+    ap.add_argument("--client", metavar="МНЕМОНИКА",
+                    help="клиент, чей дефект. Мнемоника уходит тегом, а у "
+                         "багрепортов ещё и в начало названия. Пресеты "
+                         "bugreport-* и supportdev-* без неё не работают")
     ap.add_argument("--parent", metavar="CRM-1234",
                     help="родительская задача: создаётся подзадачей. "
                          "Ключ проверяется до создания")
@@ -353,8 +468,18 @@ def main() -> int:
         return 2
 
     try:
+        client = resolve_client(args.client, preset, args.force)
+    except ValueError as e:
+        print(f"✗ {e}", file=sys.stderr)
+        return 2
+
+    prefix = preset["prefix"]
+    if client and preset.get("client_prefix"):
+        prefix = client
+
+    try:
         title, description = parse_document(path)
-        summary = build_summary(title, preset["prefix"])
+        summary = build_summary(title, prefix)
         estimate = parse_duration(args.estimate) if args.estimate else None
     except ValueError as e:
         print(f"✗ {path.name}: {e}", file=sys.stderr)
@@ -386,11 +511,16 @@ def main() -> int:
                   f"или нет доступа", file=sys.stderr)
             return 1
 
+    # Исполнитель по умолчанию есть только там, где его требует регламент:
+    # багрепорт заводится на тимлида команды (этап 11, 4.5.4). Явный
+    # --assignee умолчание перебивает.
+    wanted = args.assignee or preset.get("assignee")
     assignee = None
-    if args.assignee:
-        assignee = tracker.resolve_user(args.assignee)
+    if wanted:
+        assignee = tracker.resolve_user(wanted)
         if not assignee:
-            print(f"✗ в Трекере нет пользователя «{args.assignee}». "
+            source = "--assignee" if args.assignee else f"пресет {args.preset}"
+            print(f"✗ в Трекере нет пользователя «{wanted}» ({source}). "
                   f"Логин — тот же, что в почте, без домена", file=sys.stderr)
             return 1
 
@@ -402,7 +532,10 @@ def main() -> int:
     }
     if components:
         payload["components"] = components
-    tags = list(preset["tags"]) + [t for t in args.tag if t not in preset["tags"]]
+    tags = list(preset["tags"])
+    for extra in ([client] if client else []) + args.tag:
+        if extra and extra not in tags:
+            tags.append(extra)
     if tags:
         payload["tags"] = tags
     if estimate:
@@ -424,12 +557,18 @@ def main() -> int:
     print(f"  описание:    {len(description)} символов, "
           f"{description.count(chr(10)) + 1} строк")
     print(f"  оценка:      {estimate or '— (не заполняется)'}")
-    print(f"  исполнитель: {assignee or '— (не назначается)'}")
+    print(f"  клиент:      {client + ' — ' + MNEMONICS.get(client, 'нет в справочнике') if client else '—'}")
+    print(f"  исполнитель: {assignee or '— (не назначается)'}"
+          f"{' (умолчание пресета)' if assignee and not args.assignee else ''}")
     if parent:
         print(f"  родитель:    {parent} — "
               f"{parent_issue.get('summary', '?')}")
     if duplicates:
         print(f"  ⚠️ уже есть с таким названием: {', '.join(duplicates)}")
+    if preset.get("warn_no_parent") and not parent:
+        print("  ⚠️ родителя нет. По этапу 11 (4.5.2) багрепорт без родителя — "
+              "это дефект НЕ по доработкам задачи. Если дефект по доработке, "
+              "родитель обязателен: подзадача «Разработка» либо основная задача")
     print()
 
     if duplicates and not args.force:

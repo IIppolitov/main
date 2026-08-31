@@ -107,7 +107,10 @@
       "Bash(gh api --method PUT:*)",
       "Bash(gh api --method DELETE:*)",
       "Bash(gh api -X:*)",
-      "Bash(gh api graphql:*)"
+      "Bash(gh api graphql:*)",
+      "Bash(python3 .claude/scripts/tracker-create.py:*)",
+      "Bash(.claude/scripts/tracker-create.py:*)",
+      "Bash(./.claude/scripts/tracker-create.py:*)"
     ],
     "allow": [
       "Bash(bash .claude/scripts/tracker-issue.sh:*)",
@@ -164,7 +167,9 @@
       "Bash(./.claude/scripts/pr-comments.sh:*)",
       "Bash(.claude/scripts/pr-review-post.sh:*)",
       "Bash(bash .claude/scripts/pr-review-post.sh:*)",
-      "Bash(./.claude/scripts/pr-review-post.sh:*)"
+      "Bash(./.claude/scripts/pr-review-post.sh:*)",
+      "Bash(bash .claude/scripts/client-config.sh:*)",
+      "Bash(.claude/scripts/client-config.sh:*)"
     ]
   },
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
