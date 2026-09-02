@@ -346,9 +346,14 @@ def workdays(start, end):
 
 
 # --- выгрузка --------------------------------------------------------------------
+DISPLAY_BY_LOGIN = {}
+
+
 def user_index():
     """uid → логин. В записи учёта времени автор приходит по uid, а не по логину."""
     users, _ = tpr.api("/users", params={"perPage": 500})
+    for u in users:
+        DISPLAY_BY_LOGIN[(u.get("login") or "").lower()] = u.get("display") or ""
     return {str(u.get("uid")): (u.get("login") or "").lower() for u in users}
 
 
@@ -695,6 +700,52 @@ def assignment_gaps():
     return gaps
 
 
+def touched(login, start, end, updated_index=None):
+    """Весь след человека за период, а не только задачи, где он исполнитель.
+
+    Ворклог и поле «Исполнитель» отвечают на вопрос «что на нём числится», но не
+    на вопрос «чем он занимался». Для тестировщика основной результат — заведённый
+    багрепорт, и в часах его не видно вообще: 31.08.2026 один из тестировщиков завёл
+    четырнадцать багрепортов за день и списал при этом пять часов в две другие
+    задачи. По одним ворклогам такой день выглядит как простой.
+
+    Собираются три среза: что человек **создал**, где он **последний обновивший**,
+    и в какие задачи **списывал**. Полного следа это не даёт: прямого фильтра «кто
+    менял» в языке запросов Трекера нет, а `updatedBy` хранит только последнего —
+    правки, поверх которых кто-то написал позже, сюда не попадут. Читать историю
+    каждой задачи периода — сотни запросов, поэтому граница проведена здесь и
+    названа явно.
+    """
+    created, page = [], 1
+    query = (f'Created: >= "{start.isoformat()}" AND Created: <= "{end.isoformat()}" '
+             f'AND "Author": "{login}" "Sort by": Created DESC')
+    while True:
+        batch, _ = tpr.api("issues/_search", method="POST", body={"query": query},
+                           params={"perPage": 100, "page": page})
+        created.extend(batch)
+        if len(batch) < 100:
+            break
+        page += 1
+
+    last_touch = [i for i in (updated_index or [])
+                  if ((i.get("updatedBy") or {}).get("display") or "") == DISPLAY_BY_LOGIN.get(login, "")]
+    return {"created": created, "lastTouch": last_touch}
+
+
+def updated_since(start):
+    """Все задачи организации, обновлённые с даты. Один запрос на всех — дальше
+    раскладываем по людям на своей стороне."""
+    issues, page = [], 1
+    query = f'Updated: >= "{start.isoformat()}" "Sort by": Updated DESC'
+    while True:
+        batch, _ = tpr.api("issues/_search", method="POST", body={"query": query},
+                           params={"perPage": 100, "page": page})
+        issues.extend(batch)
+        if len(batch) < 100:
+            return issues
+        page += 1
+
+
 def orphan_qa(uid_login):
     """«Ничьё»: задачи в тестовых статусах, где исполнитель — не тестировщик.
 
@@ -755,7 +806,8 @@ TABLE_HEAD_DEV = ("| Задача | Статус | В статусе | Прое�
 
 
 def print_markdown(snapshot, norm, start, end, teams, pipeline, orphans, plans=None,
-                   console_note=None, releases=None, gaps=None, out=sys.stdout):
+                   console_note=None, releases=None, gaps=None, traces=None,
+                   out=sys.stdout):
     w = out.write
     w(f"# Занятость и загрузка — снимок на {date.today().isoformat()}\n\n")
     w(f"Период: **{start.isoformat()} — {end.isoformat()}** "
@@ -891,6 +943,37 @@ def print_markdown(snapshot, norm, start, end, teams, pipeline, orphans, plans=N
                                  sorted(s["foreign"].items(), key=lambda kv: -kv[1])[:10])
                 w(f"**Списывал в чужие задачи:** {rows}\n"
                   f"> Работа идёт мимо назначения — либо помогает, либо задача числится не на том.\n\n")
+
+            tr = (traces or {}).get(s["login"])
+            if tr is not None:
+                created, last = tr["created"], tr["lastTouch"]
+                w(f"**След за период — завёл {len(created)}, последний правил "
+                  f"{len(last)} задач**\n\n")
+                if not created and not last:
+                    w("Ни одной созданной или тронутой задачи.\n\n")
+                if created:
+                    by_queue = defaultdict(list)
+                    for i in created:
+                        by_queue[(i.get("queue") or {}).get("key") or "?"].append(i)
+                    parts = ", ".join(f"{q} — {len(v)}" for q, v in
+                                      sorted(by_queue.items(), key=lambda kv: -len(kv[1])))
+                    w(f"*Создал ({parts}):*\n\n")
+                    w("| Задача | Заведена | Статус | Тема |\n|---|---|---|---|\n")
+                    for i in created[:30]:
+                        w(f"| {i['key']} | {(i.get('createdAt') or '')[:10]} | "
+                          f"{(i.get('status') or {}).get('display')} | "
+                          f"{(i.get('summary') or '')[:55]} |\n")
+                    if len(created) > 30:
+                        w(f"\n…и ещё {len(created) - 30}.\n")
+                    w("\n")
+                only_touch = [i for i in last
+                              if i["key"] not in {c["key"] for c in created}]
+                if only_touch:
+                    keys = ", ".join(i["key"] for i in only_touch[:25])
+                    more = f" и ещё {len(only_touch) - 25}" if len(only_touch) > 25 else ""
+                    w(f"*Правил последним, но не заводил — {len(only_touch)}:* {keys}{more}\n\n")
+                w("> След неполный: `updatedBy` хранит только последнего правившего, "
+                  "и правки, поверх которых кто-то написал позже, сюда не попадают.\n\n")
 
             flags = red_flags(s, start, end)
             if flags:
@@ -1029,7 +1112,8 @@ def red_flags(s, start, end):
     if p and p["bound"] and not p["activity"] and s["hours"]:
         out.append(f"StaffCop не отдал ни одной минуты за период, хотя учётка привязана, "
                    f"а в Трекер списано {fmt_h(s['hours'])} ч. Значит агент не собирает — "
-                   f"второго контура по человеку нет, и судить о его загрузке не по чему.")
+                   f"второго контура по присутствию нет. Судить о загрузке по одним "
+                   f"ворклогам нельзя: смотреть след в Трекере (`--touched`).")
     elif p and p["activity"]:
         share = s["hours"] / p["activity"]
         if share < 0.5:
@@ -1060,13 +1144,18 @@ def red_flags(s, start, end):
         out.append(f"Залипло в статусе дольше {STUCK_DAYS} дней: {keys}")
     no_log = [i for i in s["active"] if not (i.get("spent"))]
     if no_log:
+        # Отсутствие списаний ещё не значит отсутствие работы: у тестировщика
+        # основной результат — заведённый багрепорт, и в часах он не виден.
+        # Поэтому формулировка про учёт, а не про безделье.
         out.append(f"В работе без единого списания: "
-                   f"{', '.join(i['key'] for i in no_log[:8])}")
+                   f"{', '.join(i['key'] for i in no_log[:8])}. "
+                   f"Работа могла идти — проверять по следу, а не по часам.")
     return out
 
 
 def print_json(snapshot, norm, start, end, pipeline, orphans, plans=None,
-               console_note=None, releases=None, gaps=None, out=sys.stdout):
+               console_note=None, releases=None, gaps=None, traces=None,
+               out=sys.stdout):
     def slim(i):
         return {
             "key": i["key"], "summary": i.get("summary"),
@@ -1095,6 +1184,13 @@ def print_json(snapshot, norm, start, end, pipeline, orphans, plans=None,
             "login": s["login"], "name": s["name"], "team": s["team"], "role": s["role"],
             "hours": s["hours"], "norm": s["norm"], "daysLogged": s["days_logged"],
             "presence": s.get("presence"),
+            "trace": ({"created": [{"key": i["key"], "summary": i.get("summary"),
+                                    "queue": (i.get("queue") or {}).get("key"),
+                                    "createdAt": (i.get("createdAt") or "")[:10]}
+                                   for i in (traces or {}).get(s["login"], {}).get("created", [])],
+                       "lastTouch": [i["key"] for i in
+                                     (traces or {}).get(s["login"], {}).get("lastTouch", [])]}
+                      if traces else None),
             "active": [slim(i) for i in s["active"]],
             "queue": [slim(i) for i in s["queue"]],
             "planned": [dict(slim(i), forecast=(plans or {}).get(i["key"], ("", []))[0] or None)
@@ -1138,7 +1234,7 @@ def print_csv(snapshot, out=sys.stdout):
 
 
 def save(snapshot, norm, start, end, teams, pipeline, orphans, plans=None,
-         console_note=None, releases=None, gaps=None):
+         console_note=None, releases=None, gaps=None, traces=None):
     root = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
     folder = os.path.join(root, "reports")
     os.makedirs(folder, exist_ok=True)
@@ -1147,10 +1243,10 @@ def save(snapshot, norm, start, end, teams, pipeline, orphans, plans=None,
     js = os.path.join(folder, base + ".json")
     with open(md, "w") as fh:
         print_markdown(snapshot, norm, start, end, teams, pipeline, orphans, plans,
-                       console_note, releases, gaps, out=fh)
+                       console_note, releases, gaps, traces, out=fh)
     with open(js, "w") as fh:
         print_json(snapshot, norm, start, end, pipeline, orphans, plans, console_note,
-                   releases, gaps, out=fh)
+                   releases, gaps, traces, out=fh)
     print(f"Сохранено:\n  {md}\n  {js}", file=sys.stderr)
 
 
@@ -1167,6 +1263,9 @@ def main():
     ap.add_argument("--to", dest="date_to", help="конец периода ГГГГ-ММ-ДД")
     ap.add_argument("--format", choices=["md", "json", "csv"], default="md")
     ap.add_argument("--no-pipeline", action="store_true", help="без раздела «Что придёт»")
+    ap.add_argument("--touched", action="store_true",
+                    help="весь след человека за период: что завёл и что правил "
+                         "последним, а не только задачи, где он исполнитель")
     ap.add_argument("--no-console", action="store_true",
                     help="не ходить в консоль за присутствием: только Трекер и "
                          "календарная норма")
@@ -1224,6 +1323,13 @@ def main():
 
     # Прогноз считается только для тестирования и только по флагу: он стоит одного
     # запроса на каждого родителя, а у одного тестировщика их бывает под полсотни.
+    # След человека — по флагу: один общий запрос на всех плюс по запросу на
+    # каждого за созданными задачами.
+    traces = None
+    if args.touched:
+        updated = updated_since(start)
+        traces = {p["login"]: touched(p["login"], start, end, updated) for p in snapshot}
+
     plans = {}
     if args.forecast:
         planned = [i for s_ in snapshot if s_["team"] == "qa" for i in s_["planned"]]
@@ -1232,16 +1338,16 @@ def main():
 
     if args.save:
         save(snapshot, norm, start, end, teams, pipeline, orphans, plans, console_note,
-             releases, gaps)
+             releases, gaps, traces)
         return
     if args.format == "json":
         print_json(snapshot, norm, start, end, pipeline, orphans, plans, console_note,
-                   releases, gaps)
+                   releases, gaps, traces)
     elif args.format == "csv":
         print_csv(snapshot)
     else:
         print_markdown(snapshot, norm, start, end, teams, pipeline, orphans, plans,
-                       console_note, releases, gaps)
+                       console_note, releases, gaps, traces)
 
 
 if __name__ == "__main__":
