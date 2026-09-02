@@ -46,6 +46,10 @@ DEV = {
     "open", "needInfo", "inProgress", "forRevision", "readyfordevelopment",
     "indevelopment", "localReady", "selectedForDev", "backlog", "blocked",
     "devAwaiting", "onpause", "onHold",
+    # «Есть дефекты» — подзадача ушла в багрепорты ([этап 11], 4.5.3). Собственного
+    # состояния у неё в этот момент нет, но работа идёт на стороне разработки,
+    # поэтому стадия та же.
+    "therearedefects",
 }
 REVIEW = {"reviewReady", "inReview"}
 # Внутренний QA и внешний тест разделены намеренно: возврат от своего тестировщика
@@ -55,7 +59,13 @@ EXT = {"externalTest", "demoToCustomer", "approvalbytheClient", "resultAcceptanc
 DONE = {"resolved", "closed", "rc", "cancelled", "deploytoprod", "releaseneeded"}
 
 # Куда должна уехать задача, чтобы это считалось возвратом.
-BACK_TO = {"inProgress", "forRevision", "open", "needInfo", "indevelopment", "readyfordevelopment"}
+#
+# «Есть дефекты» здесь наравне с «На доработку»: с 02.09.2026 тестировщик,
+# заведя багрепорт, переводит подзадачу именно туда ([этап 11], 4.5.3). Без этого
+# ключа возвраты после перехода на новый статус перестали бы считаться вовсе —
+# метрика обнулилась бы молча.
+BACK_TO = {"inProgress", "forRevision", "open", "needInfo", "indevelopment",
+           "readyfordevelopment", "therearedefects"}
 
 # Тестировщики — docs/company/org-structure.md. Нужны, чтобы отличить возврат от
 # «QA взял задачу в тест»: по этапу 11 регламента QA должен переводить
@@ -261,6 +271,32 @@ def worklog(key):
     return dict(sorted(by_person.items(), key=lambda kv: -kv[1]))
 
 
+def bugreport_hours(key):
+    """Часы, списанные в багрепорты этой подзадачи.
+
+    С 02.09.2026 исправление дефекта разработчик списывает не в подзадачу
+    «Разработка», а в багрепорт под ней ([этап 11], раздел 6). Поэтому сравнивать
+    оценку подзадачи с одним лишь её собственным списанием больше нельзя: получится
+    ложный недорасход тем больший, чем хуже была сделана доработка.
+    """
+    try:
+        links, _ = api(f"issues/{key}/links")
+    except SystemExit:
+        return 0.0, 0
+    kids = [l["object"]["key"] for l in links
+            if (l.get("type") or {}).get("id") == "subtask"
+            and l.get("direction") == "outward"
+            and str(l["object"]["key"]).startswith("BUGREPORTS")]
+    total = 0.0
+    for k in kids:
+        try:
+            issue, _ = api(f"issues/{k}")
+        except SystemExit:
+            continue
+        total += to_hours(issue.get("spent")) or 0
+    return total, len(kids)
+
+
 def status_transitions(entries):
     """[(момент, кто, из_ключа, из_имени, в_ключ, в_имя)] в хронологическом порядке."""
     out = []
@@ -279,7 +315,7 @@ def status_transitions(entries):
     return out
 
 
-def analyse(issue, entries, spent_by):
+def analyse(issue, entries, spent_by, bugs=(0.0, 0)):
     key = issue["key"]
     trans = status_transitions(entries)
 
@@ -292,10 +328,11 @@ def analyse(issue, entries, spent_by):
         frm_stage, to_stage = stage_of(fk), stage_of(tk)
 
         if tk in BACK_TO and tk != fk and frm_stage in returns:
-            # «На доработку» — однозначный возврат, кто бы его ни поставил.
-            # Всё остальное, сделанное тестировщиком из тестового статуса, —
-            # это он взял задачу к себе, а не вернул разработчику.
-            if tk != "forRevision" and who in QA_PEOPLE and frm_stage in ("qa", "ext"):
+            # «На доработку» и «Есть дефекты» — однозначные возвраты, кто бы их
+            # ни поставил. Всё остальное, сделанное тестировщиком из тестового
+            # статуса, — это он взял задачу к себе, а не вернул разработчику.
+            if (tk not in ("forRevision", "therearedefects")
+                    and who in QA_PEOPLE and frm_stage in ("qa", "ext")):
                 pickups.append((ts, who, fd, td))
             else:
                 returns[frm_stage].append((ts, who, fd, td))
@@ -327,10 +364,15 @@ def analyse(issue, entries, spent_by):
     est = to_hours(issue.get("estimation"))
     spent = to_hours(issue.get("spent"))
     base = est_orig if est_orig else est
-    over = (spent - base) if (spent is not None and base) else None
+    bug_h, bug_n = bugs
+    # Факт задачи = её собственные часы плюс часы её багрепортов: исправление
+    # дефекта живёт там (раздел 6 этапа 11).
+    fact = (spent or 0) + bug_h if (spent is not None or bug_h) else None
+    over = (fact - base) if (fact is not None and base) else None
 
     dev_time = sum(
-        (time_in.get(k, timedelta()) for k in ("inProgress", "indevelopment", "forRevision")),
+        (time_in.get(k, timedelta())
+         for k in ("inProgress", "indevelopment", "forRevision", "therearedefects")),
         timedelta(),
     )
 
@@ -351,6 +393,9 @@ def analyse(issue, entries, spent_by):
         "est_orig_h": est_orig,
         "est_h": est,
         "spent_h": spent,
+        "bug_h": bug_h or None,
+        "bug_n": bug_n or None,
+        "fact_h": fact,
         "over_h": over,
         "over_pct": (round(over / base * 100) if (over is not None and base) else None),
         "ret_review": len(returns["review"]),
@@ -386,6 +431,7 @@ COLUMNS = [
     ("status", "Статус"),
     ("est_orig_h", "Оценка, ч"),
     ("spent_h", "Факт, ч"),
+    ("bug_h", "Дефекты, ч"),
     ("spent_by_str", "Кто списал, ч"),
     ("over_h", "Δ, ч"),
     ("over_pct", "Δ, %"),
@@ -440,13 +486,13 @@ def print_markdown(projects, args):
         for r in rows:
             print("| " + " | ".join(cell(r, f) for f, _ in COLUMNS) + " |")
 
-        spent_all = sum(r["spent_h"] or 0 for r in rows)
+        spent_all = sum((r["spent_h"] or 0) + (r["bug_h"] or 0) for r in rows)
         # Перерасход считается только по задачам, где есть и оценка, и факт: иначе
         # 30 часов на задаче с пустой оценкой раздували бы отклонение по спринту.
-        both = [r for r in rows if r["est_orig_h"] and r["spent_h"] is not None]
+        both = [r for r in rows if r["est_orig_h"] and r["fact_h"] is not None]
         est_b = sum(r["est_orig_h"] for r in both)
-        spent_b = sum(r["spent_h"] for r in both)
-        no_est = [r for r in rows if not r["est_orig_h"] and (r["spent_h"] or 0) > 0]
+        spent_b = sum(r["fact_h"] for r in both)
+        no_est = [r for r in rows if not r["est_orig_h"] and (r["fact_h"] or 0) > 0]
         over = [r for r in both if r["over_h"] > 0]
         print(f"\n**Итого по {len(rows)} задачам:** списано {fmt_h(spent_all)} ч.")
         print(f"По {len(both)} задачам, где есть и оценка, и факт: оценка {fmt_h(est_b)} ч, "
@@ -456,7 +502,7 @@ def print_markdown(projects, args):
               + f"; вышли за оценку {len(over)}.")
         if no_est:
             print(f"Без оценки, но с трудозатратами — {len(no_est)} задач "
-                  f"на {fmt_h(sum(r['spent_h'] for r in no_est))} ч "
+                  f"на {fmt_h(sum(r['fact_h'] for r in no_est))} ч "
                   f"({', '.join(r['key'] for r in no_est)}).")
         print(f"Возвраты: с ревью {sum(r['ret_review'] for r in rows)}, "
               f"с внутреннего теста {sum(r['ret_qa'] for r in rows)}, "
@@ -492,7 +538,7 @@ def print_markdown(projects, args):
         for r in rows:
             code = r["client_code"] or "—"
             acc = by_client.setdefault(code, [0, 0])
-            acc[0] += r["spent_h"] or 0
+            acc[0] += (r["spent_h"] or 0) + (r["bug_h"] or 0)
             acc[1] += 1
         print("\n**Списано по клиентам:**\n")
         print("| Клиент | Часов | Задач |")
@@ -614,7 +660,9 @@ def main():
         with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
             logs = list(pool.map(lambda i: changelog(i["key"]), issues))
             spent = list(pool.map(lambda i: worklog(i["key"]), issues))
-        rows = [analyse(i, log, sp) for i, log, sp in zip(issues, logs, spent)]
+            bugs = list(pool.map(lambda i: bugreport_hours(i["key"]), issues))
+        rows = [analyse(i, log, sp, bg)
+                for i, log, sp, bg in zip(issues, logs, spent, bugs)]
         rows.sort(key=lambda r: (-(r["ret_total"]), -(r["over_h"] or 0)))
         projects.append((info, rows))
 

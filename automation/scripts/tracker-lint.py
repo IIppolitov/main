@@ -549,6 +549,30 @@ def _p4(t):
             for st in t.of_type("testing") if not team_of(st)]
 
 
+@rule("Р-3", "error", 11, "Статус «Есть дефекты» подкреплён открытым багрепортом",
+      "11-testirovanie-i-revju.md, 4.5.3")
+def _r3(t):
+    """Подзадача в «Есть дефекты», под которой нет ни одного открытого багрепорта.
+
+    Статус означает «смотри подзадачи»: что с работой, видно по багрепортам под
+    ней. Если открытых багрепортов нет, смотреть некуда — задача просто зависла,
+    и вернуть её забыли. Это ровно та ошибка, ради которой статус и заводился:
+    раньше она выглядела как «На доработку» и терялась среди настоящих доработок.
+    """
+    out = []
+    for st in t.subtasks:
+        if (st.get("status") or {}).get("key") != "therearedefects":
+            continue
+        bugs = [n for n in t.nested
+                if (n.get("parent") or {}).get("key") == st["key"]
+                and n["queue"]["key"] == "BUGREPORTS"
+                and (n.get("status") or {}).get("key") not in CLOSED_STATUSES]
+        if not bugs:
+            out.append((st["key"], "статус «Есть дефекты», но открытых багрепортов "
+                                   "под задачей нет — вернуть в рабочий статус"))
+    return out
+
+
 @rule("Р-1", "error", 9, "Есть разработчик — есть и тестировщик",
       "09-raspredelenie-zadach.md, 4.3.1")
 def _r1(t):

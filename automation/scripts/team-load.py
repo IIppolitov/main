@@ -115,6 +115,10 @@ QUEUE = {  # работа ждёт этого человека — очеред�
     "releaseneeded", "deploytoprod", "deadline", "newGoal",
 }
 WAITING = {  # ждёт не его: согласование, клиент, чужой этап
+    # «Есть дефекты» стоит здесь, хотя исполнитель — тестировщик ([этап 11], 4.5.3).
+    # Вернуть подзадачу он сможет, только когда закроют багрепорты, то есть ждёт
+    # он других. В его очередь сегодняшнего дня такая задача не идёт.
+    "therearedefects",
     "needInfo", "onpause", "onHold", "blocked", "cisready", "confirmed",
     "approvaloftheBA", "approvaloftheAssessment", "kamapproval",
     "approvalbytheClient", "resultAcceptance", "needAcceptance",
