@@ -659,6 +659,42 @@ def forecast(issues):
     return out
 
 
+def assignment_gaps():
+    """Разработчик назначен, тестировщик — нет: рассинхрон [этапа 9](docs/regulations/crm-lifecycle/09-raspredelenie-zadach.md) (4.3.1).
+
+    Обратная сторона правила «нет разработчика — нет и тестировщика». Пока
+    тестировщик снимается с нераспределённых задач, кто-то должен ловить обратный
+    случай: задачу распределили, разработчика назначили, а тестировщика забыли.
+    Иначе работа доедет до «Можно тестировать» и станет ничьей — ровно так и
+    накопился раздел «Ничьё».
+
+    Считаются только задачи, где разработка уже на ком-то: подзадача без
+    разработчика — это не пробел в назначении, а неначатая работа, и она разбирается
+    в другом месте.
+    """
+    fresh = (date.today() - timedelta(days=ORPHAN_FRESH_DAYS)).isoformat()
+    query = ('Queue: CRM AND Type: "Тестирование" AND Assignee: empty() '
+             'AND Resolution: empty() '
+             f'AND Updated: >= "{fresh}" "Sort by": Updated ASC')
+    issues, page = [], 1
+    while True:
+        batch, _ = tpr.api("issues/_search", method="POST", body={"query": query},
+                           params={"perPage": 100, "page": page})
+        issues.extend(batch)
+        if len(batch) < 100:
+            break
+        page += 1
+
+    plans = forecast(issues)
+    gaps = []
+    for issue in issues:
+        label, devs = plans.get(issue["key"], ("", []))
+        named = [d for d in devs if (d.get("assignee") or {}).get("id")]
+        if named:
+            gaps.append((issue, named))
+    return gaps
+
+
 def orphan_qa(uid_login):
     """«Ничьё»: задачи в тестовых статусах, где исполнитель — не тестировщик.
 
@@ -719,7 +755,7 @@ TABLE_HEAD_DEV = ("| Задача | Статус | В статусе | Прое�
 
 
 def print_markdown(snapshot, norm, start, end, teams, pipeline, orphans, plans=None,
-                   console_note=None, releases=None, out=sys.stdout):
+                   console_note=None, releases=None, gaps=None, out=sys.stdout):
     w = out.write
     w(f"# Занятость и загрузка — снимок на {date.today().isoformat()}\n\n")
     w(f"Период: **{start.isoformat()} — {end.isoformat()}** "
@@ -929,6 +965,22 @@ def print_markdown(snapshot, norm, start, end, teams, pipeline, orphans, plans=N
                 w(f"Состав и часы релизов — снимок синхронизации с Трекером "
                   f"({min(synced)} — {max(synced)}), а не живой запрос.\n\n")
 
+    if gaps:
+        w("## Разработчик назначен, тестировщик — нет\n\n")
+        w(f"Задач — **{len(gaps)}**. По [этапу 9](../docs/regulations/crm-lifecycle/09-raspredelenie-zadach.md)\n"
+          "(4.3.1) тимлид назначает исполнителей подзадач «Разработка» и «Тестирование»\n"
+          "одной сессией. Здесь первое сделано, второе — нет: работа доедет до «Можно\n"
+          "тестировать» и станет ничьей.\n\n")
+        w("| Тестирование | Статус | В статусе | Клиент | Разработка | Тема |\n")
+        w("|---|---|---|---|---|---|\n")
+        for issue, devs in sorted(gaps, key=lambda g: -(days_in_status(g[0]) or 0)):
+            who = ", ".join(f"{d['key']} — {(d.get('assignee') or {}).get('display')}"
+                            for d in devs[:2])
+            w(f"| {issue['key']} | {(issue.get('status') or {}).get('display')} | "
+              f"{days_in_status(issue)} дн. | {client_of(issue) or '—'} | {who} | "
+              f"{(issue.get('summary') or '')[:55]} |\n")
+        w("\n")
+
     if orphans:
         w("## Ничьё: ждёт теста, но числится не на тестировщике\n\n")
         w(f"Задач — **{len(orphans)}** (очереди CRM, BUGREPORTS, SUPPORTDEV, тронутые\n"
@@ -1014,7 +1066,7 @@ def red_flags(s, start, end):
 
 
 def print_json(snapshot, norm, start, end, pipeline, orphans, plans=None,
-               console_note=None, releases=None, out=sys.stdout):
+               console_note=None, releases=None, gaps=None, out=sys.stdout):
     def slim(i):
         return {
             "key": i["key"], "summary": i.get("summary"),
@@ -1032,6 +1084,13 @@ def print_json(snapshot, norm, start, end, pipeline, orphans, plans=None,
                    "workdays": len(workdays(start, end)), "norm": norm},
         "consoleNote": console_note,
         "releaseWindows": releases,
+        "assignmentGaps": [{
+            "key": i["key"], "summary": i.get("summary"),
+            "status": (i.get("status") or {}).get("display"),
+            "days": days_in_status(i), "client": client_of(i),
+            "devs": [{"key": d["key"], "assignee": (d.get("assignee") or {}).get("display"),
+                      "status": (d.get("status") or {}).get("display")} for d in devs],
+        } for i, devs in (gaps or [])],
         "people": [{
             "login": s["login"], "name": s["name"], "team": s["team"], "role": s["role"],
             "hours": s["hours"], "norm": s["norm"], "daysLogged": s["days_logged"],
@@ -1079,7 +1138,7 @@ def print_csv(snapshot, out=sys.stdout):
 
 
 def save(snapshot, norm, start, end, teams, pipeline, orphans, plans=None,
-         console_note=None, releases=None):
+         console_note=None, releases=None, gaps=None):
     root = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
     folder = os.path.join(root, "reports")
     os.makedirs(folder, exist_ok=True)
@@ -1088,10 +1147,10 @@ def save(snapshot, norm, start, end, teams, pipeline, orphans, plans=None,
     js = os.path.join(folder, base + ".json")
     with open(md, "w") as fh:
         print_markdown(snapshot, norm, start, end, teams, pipeline, orphans, plans,
-                       console_note, releases, out=fh)
+                       console_note, releases, gaps, out=fh)
     with open(js, "w") as fh:
         print_json(snapshot, norm, start, end, pipeline, orphans, plans, console_note,
-                   releases, out=fh)
+                   releases, gaps, out=fh)
     print(f"Сохранено:\n  {md}\n  {js}", file=sys.stderr)
 
 
@@ -1152,6 +1211,7 @@ def main():
     qa_in_scope = "qa" in teams and not args.no_pipeline
     pipeline = pipeline_qa(date.today()) if qa_in_scope else []
     orphans = orphan_qa(uid_login) if qa_in_scope else []
+    gaps = assignment_gaps() if qa_in_scope else []
 
     # Окна теста по релизам прилаги — только когда в охвате тестирование и консоль
     # доступна: без них раздел стал бы пустой рамкой.
@@ -1172,15 +1232,16 @@ def main():
 
     if args.save:
         save(snapshot, norm, start, end, teams, pipeline, orphans, plans, console_note,
-             releases)
+             releases, gaps)
         return
     if args.format == "json":
-        print_json(snapshot, norm, start, end, pipeline, orphans, plans, console_note, releases)
+        print_json(snapshot, norm, start, end, pipeline, orphans, plans, console_note,
+                   releases, gaps)
     elif args.format == "csv":
         print_csv(snapshot)
     else:
         print_markdown(snapshot, norm, start, end, teams, pipeline, orphans, plans,
-                       console_note, releases)
+                       console_note, releases, gaps)
 
 
 if __name__ == "__main__":

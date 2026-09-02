@@ -264,6 +264,16 @@ def team_of(issue):
     return ""
 
 
+def assignee_of(issue):
+    """id исполнителя либо пустая строка. Поле у задачи без исполнителя приходит
+    как null, а не отсутствует, — отсюда двойная проверка."""
+    return (issue.get("assignee") or {}).get("id") or ""
+
+
+def assignee_name(issue):
+    return (issue.get("assignee") or {}).get("display") or "—"
+
+
 def url_of(key):
     return f"{TRACKER_HOST}/{key}"
 
@@ -537,6 +547,63 @@ def _p3(t):
 def _p4(t):
     return [(st["key"], "не проставлен компонент — непонятно, тестирование какой команды")
             for st in t.of_type("testing") if not team_of(st)]
+
+
+@rule("Р-1", "error", 9, "Есть разработчик — есть и тестировщик",
+      "09-raspredelenie-zadach.md, 4.3.1")
+def _r1(t):
+    """Асимметрия распределения в одну сторону.
+
+    Этап 9 требует, чтобы у подзадачи «Тестирование» был назначен тестировщик, и
+    ставит это критерием завершения этапа. **Момент назначения регламентом не
+    определён** — сессия распределения проходит на виклике разработки, где
+    тестировщиков нет, и это открытый вопрос. Но требование от этого не исчезает:
+    распределённая разработка без назначенного тестировщика доедет до «Можно
+    тестировать» ни на ком, и задача осядет на менеджере клиента.
+
+    Правило ловит именно результат, а не момент: оно ничего не говорит о том,
+    когда назначение должно было случиться.
+    """
+    out = []
+    for test in t.of_type("testing"):
+        if assignee_of(test):
+            continue
+        team = team_of(test)
+        devs = [d for d in t.of_type("development")
+                if (not team or team_of(d) == team) and assignee_of(d)]
+        if devs:
+            who = ", ".join(f"{d['key']} → {assignee_name(d)}" for d in devs[:2])
+            out.append((test["key"], "нет исполнителя, хотя разработка распределена "
+                                     f"({who})"))
+    return out
+
+
+@rule("Р-2", "warn", 9, "Тестировщик не назначается раньше разработчика",
+      "09-raspredelenie-zadach.md, 4.3.1")
+def _r2(t):
+    """Асимметрия в обратную сторону.
+
+    Подзадача «Тестирование» с исполнителем при нераспределённой «Разработке» —
+    обещание, выданное авансом: работа не начата, а в плане тестировщика место
+    занято. У одного тестировщика таких накапливается больше десятка, и его
+    очередь перестаёт читаться.
+
+    Уровень `warn`, а не `error`: сама по себе такая пара регламенту не
+    противоречит, ломается от неё планирование, а не процесс.
+    """
+    out = []
+    for test in t.of_type("testing"):
+        if not assignee_of(test):
+            continue
+        team = team_of(test)
+        devs = [d for d in t.of_type("development")
+                if (not team or team_of(d) == team)
+                and (d.get("status") or {}).get("key") not in CLOSED_STATUSES]
+        if devs and not any(assignee_of(d) for d in devs):
+            keys = ", ".join(d["key"] for d in devs[:3])
+            out.append((test["key"], f"тестировщик назначен, а разработка ещё ни на ком "
+                                     f"({keys}) — до распределения исполнителя снять"))
+    return out
 
 
 @rule("П-5", "error", 1, "В дереве только предусмотренные регламентом типы подзадач",

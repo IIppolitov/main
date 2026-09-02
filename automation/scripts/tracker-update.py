@@ -47,6 +47,7 @@ wiki-push.py. Уведомить: --notify.
 ------------
 
     --assignee ЛОГИН      исполнитель: логин, почта или «Фамилия Имя»
+    --unassign            снять исполнителя
     --component ИМЯ       компонент команды, флаг можно повторить
     --parent KEY          родитель: задача становится подзадачей KEY
     --field ИМЯ=ЗНАЧЕНИЕ  любое другое поле по русскому названию либо id
@@ -359,7 +360,17 @@ def build_field_patch(tracker: "Tracker", key: str, issue: dict,
     payload: dict = {}
     report: list[str] = []
 
-    if args.assignee:
+    if args.unassign:
+        # Снятие исполнителя — обычная операция при распределении: по [этапу 9]
+        # (docs/regulations/crm-lifecycle/09-raspredelenie-zadach.md) тестировщик
+        # назначается вместе с разработчиком, и пока разработчика нет, подзадача
+        # «Тестирование» никого не ждёт. Трекер снимает исполнителя явным null.
+        if not (issue.get("assignee") or {}).get("id"):
+            print(f"· {key}: исполнителя и так нет — пропуск", file=sys.stderr)
+            return None
+        payload["assignee"] = None
+        report.append(f"  исполнитель: {shown(issue.get('assignee'))} → снят")
+    elif args.assignee:
         user = tracker.find_user(args.assignee)
         if user is None:
             print(f"✗ {key}: сотрудник «{args.assignee}» не найден — "
@@ -494,6 +505,9 @@ def main() -> int:
                     help="приложить файл к комментарию (можно несколько раз)")
     ap.add_argument("--assignee", metavar="ЛОГИН",
                     help="исполнитель: логин, почта или «Фамилия Имя»")
+    ap.add_argument("--unassign", action="store_true",
+                    help="снять исполнителя. Взаимоисключимо с --assignee; задача "
+                         "без исполнителя пропускается")
     ap.add_argument("--component", action="append", metavar="ИМЯ", default=[],
                     help="компонент команды (можно несколько раз)")
     ap.add_argument("--parent", metavar="KEY",
@@ -507,7 +521,10 @@ def main() -> int:
                     help="уведомить подписчиков (по умолчанию тихо)")
     args = ap.parse_args()
 
-    fields_mode = bool(args.assignee or args.component or args.parent
+    if args.unassign and args.assignee:
+        ap.error("--unassign и --assignee взаимоисключимы")
+
+    fields_mode = bool(args.assignee or args.unassign or args.component or args.parent
                        or args.field)
     if fields_mode and (args.comment or args.description):
         print("Правка полей не совмещается с --comment и --description: "
@@ -515,7 +532,7 @@ def main() -> int:
         return 2
     if not fields_mode and not (args.comment or args.description):
         print("Не указано, что делать: --comment, --description либо флаги "
-              "правки полей (--assignee / --component / --parent / --field).",
+              "правки полей (--assignee / --unassign / --component / --parent / --field).",
               file=sys.stderr)
         return 2
 
