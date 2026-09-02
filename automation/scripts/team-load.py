@@ -39,7 +39,11 @@ import importlib.util
 import json
 import os
 import re
+import subprocess
 import sys
+import urllib.error
+import urllib.parse
+import urllib.request
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 
@@ -127,7 +131,11 @@ CLOSED = {"closed", "cancelled", "resolved", "achieved"}
 #
 # Поэтому для тестирования очередь сужена, остальное уходит в корзину «в плане».
 QUEUE_BY_TEAM = {
-    "qa": {"readyForTest", "forRevision", "reviewReady"},
+    # «Оценка задачи» здесь не случайно: по [этапу 5](docs/regulations/crm-lifecycle/05-ocenka-zadachi.md)
+    # поле «Оценка: тестирование» заполняет команда тестирования, то есть подзадача
+    # в этом статусе ждёт действия тестировщика, а не разработки. Именно эти задачи
+    # и обнаруживаются незаполненными, когда на наборе спринта нечего суммировать.
+    "qa": {"readyForTest", "forRevision", "reviewReady", "needEstimate"},
 }
 
 # Поля разбивки оценки — локальные поля очереди CRM. Фильтр по ним не строится
@@ -163,6 +171,151 @@ ORPHAN_FRESH_DAYS = 90
 
 def bail(message):
     sys.exit(f"team-load.py: {message}")
+
+
+# --- часы из консоли ------------------------------------------------------------
+# Второй контур учёта. Трекер отвечает на вопрос «сколько человек списал», консоль
+# добавляет «сколько он вообще был за компьютером» (StaffCop). Разница между двумя
+# величинами и есть ответ на вопрос, который по одному Трекеру не решается: низкая
+# цифра — это отпуск, работа мимо Трекера или реальная просадка.
+#
+# Складывать их нельзя, это разные величины: присутствие и списание.
+CONSOLE_API = "https://console.powbeecrm.com/api/v1"
+
+
+def console_token():
+    token = os.environ.get("PBE_CONSOLE_API_TOKEN", "")
+    if not token:
+        try:
+            out = subprocess.run(["security", "find-generic-password", "-s",
+                                  "pbe-console-api", "-w"],
+                                 capture_output=True, text=True, timeout=10)
+            token = out.stdout.strip() if out.returncode == 0 else ""
+        except Exception:
+            token = ""
+    return token
+
+
+def console_get(path, params=None):
+    """GET к API консоли. (данные, None) либо (None, причина) — падать нельзя:
+    консоль второстепенна, отчёт должен собираться и без неё."""
+    token = console_token()
+    if not token:
+        return None, ("токен консоли не найден: ни PBE_CONSOLE_API_TOKEN, "
+                      "ни связка pbe-console-api в Keychain")
+    url = CONSOLE_API + path + ("?" + urllib.parse.urlencode(params) if params else "")
+    req = urllib.request.Request(url)
+    req.add_header("X-Console-Token", token)
+    req.add_header("Accept", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=90) as resp:
+            return json.loads(resp.read().decode()), None
+    except urllib.error.HTTPError as e:
+        if e.code == 403:
+            return None, f"консоль: нет прав на {path}"
+        return None, f"консоль: HTTP {e.code} на {path}"
+    except Exception as e:
+        return None, f"консоль недоступна: {type(e).__name__}"
+
+
+def release_windows():
+    """Окна внутреннего тестирования по релизам приложения.
+
+    Задачи прилаги выпускаются **скоупом**: подзадача «Тестирование» не уезжает на
+    тест сама по себе, как в админке, — она ждёт, пока релиз клиента дойдёт до
+    стадии «Внутренний QA». Поэтому для прилаги вопрос «когда придёт» решается не
+    статусом соседней разработки, а стадией релиза клиента.
+
+    Возвращает по одной строке на активный релиз: где он сейчас, когда по плану
+    открывается окно теста и кто на нём стоит.
+    """
+    payload, err = console_get("/releases", {"limit": 100})
+    if payload is None:
+        return [], err
+
+    people_by_id = {}
+    hours, _ = console_get("/hours", {"period": "week"})
+    if hours:
+        for row in hours.get("data") or []:
+            u = row.get("user") or {}
+            people_by_id[u.get("id")] = u.get("name")
+
+    out = []
+    for rel in payload.get("data") or []:
+        if (rel.get("status") or {}).get("code") != 1:   # только активные
+            continue
+        card, err = console_get(f"/releases/{rel['id']}")
+        if card is None:
+            continue
+        qa = None
+        for st in (card.get("data") or {}).get("stages") or []:
+            if (st.get("stage") or {}).get("code") == 3:   # Внутренний QA
+                qa = st
+                break
+        tracker = ((card.get("data") or {}).get("tracker") or {})
+        out.append({
+            "client": (rel.get("client") or {}).get("mnemonic") or "?",
+            "title": rel.get("title") or "",
+            "stage": (rel.get("stage") or {}).get("title") or "",
+            "planned": rel.get("plannedReleaseDate"),
+            "overdue": bool(rel.get("overdue")),
+            "qa": qa,
+            "qaWho": [people_by_id.get(i) or f"id {i}"
+                      for i in ((qa or {}).get("responsibleIds") or [])],
+            "tasks": tracker.get("tasksTotal"),
+            "estHours": (tracker.get("hours") or {}).get("estHours"),
+            "syncedAt": tracker.get("syncedAt"),
+            "url": rel.get("trackerUrl"),
+        })
+    return out, None
+
+
+def console_hours(start, end):
+    """{логин Трекера: часы присутствия и списаний} либо (None, причина).
+
+    Логин в консоли — рабочая почта, в Трекере — её локальная часть; по ней и
+    сшиваем. Недоступность консоли не должна ронять отчёт: тогда возвращается
+    причина, а норма считается по календарю, как раньше.
+    """
+    token = console_token()
+    if not token:
+        return None, ("токен консоли не найден: ни PBE_CONSOLE_API_TOKEN, "
+                      "ни связка pbe-console-api в Keychain")
+    url = (f"{CONSOLE_API}/hours?"
+           + urllib.parse.urlencode({"date_from": start.isoformat(),
+                                     "date_to": end.isoformat()}))
+    req = urllib.request.Request(url)
+    req.add_header("X-Console-Token", token)
+    req.add_header("Accept", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=90) as resp:
+            payload = json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        code = ""
+        try:
+            code = (json.loads(e.read().decode()).get("error") or {}).get("code", "")
+        except Exception:
+            pass
+        if e.code == 403:
+            return None, "консоль: нет права user.activity.view — часы недоступны"
+        return None, f"консоль: HTTP {e.code} {code}".strip()
+    except Exception as e:
+        return None, f"консоль недоступна: {type(e).__name__}"
+
+    hours = {}
+    for row in payload.get("data") or []:
+        login = ((row.get("user") or {}).get("login") or "").split("@")[0].lower()
+        if not login:
+            continue
+        hours[login] = {
+            "activity": row.get("activityHours") or 0.0,
+            "worklog": row.get("worklogHours") or 0.0,
+            "activityDays": row.get("activityDays") or 0,
+            "worklogDays": row.get("worklogDays") or 0,
+            "bound": bool(row.get("staffcopBound")),
+        }
+    meta = payload.get("meta") or {}
+    return hours, meta.get("scope", {}).get("visibleEmployees")
 
 
 # --- период ----------------------------------------------------------------------
@@ -349,9 +502,10 @@ def estimate_hours(issue, field):
     return to_hours(issue.get(field))
 
 
-def collect(people, start, end):
+def collect(people, start, end, console=None):
     """Снимок по каждому человеку + сырьё для командных разделов."""
     uid_login = user_index()
+    console = console or {}
 
     # Часы за период — одним запросом на всех, дальше раскладываем по авторам.
     spent_hours = defaultdict(float)              # логин → часы
@@ -381,8 +535,10 @@ def collect(people, start, end):
         mine = set(i["key"] for i in issues) | set(i["key"] for i in closed)
         foreign = {k: h for k, h in spent_by_issue[login].items() if k not in mine}
 
+        presence = console.get(login)
         snapshot.append({
             "login": login, "name": name, "team": team, "role": role, "github": gh,
+            "presence": presence,
             "active": by_bucket["active"], "queue": by_bucket["queue"],
             "planned": by_bucket["planned"], "waiting": by_bucket["waiting"],
             "other": by_bucket["other"],
@@ -440,6 +596,69 @@ def pipeline_qa(today):
     return out
 
 
+# Статусы подзадачи «Разработка», по которым видно, скоро ли работа придёт на тест.
+DEV_SOON = {"inReview", "reviewReady", "localReady"}
+DEV_NOW = {"inProgress", "indevelopment"}
+DEV_DONE = {"closed", "resolved", "cancelled", "rc", "releaseneeded", "deploytoprod"}
+
+
+def forecast(issues):
+    """Когда «в плане» превратится в очередь: по состоянию соседней «Разработки».
+
+    Подзадача «Тестирование» стоит в «Готово к разработке» ровно до тех пор, пока
+    разработчик (или тимлид) не переведёт **свою** подзадачу в «Можно тестировать».
+    Значит предсказать приход можно только одним способом — посмотреть, что сейчас
+    с подзадачей «Разработка» того же родителя.
+
+    Отдельно считается случай «у разработки нет исполнителя»: такая задача не
+    придёт на тест никогда, она просто не начата. В плане тестировщика она висит,
+    в плане разработки её нет — и это не задержка, а незакрытый [этап 9](docs/regulations/crm-lifecycle/09-raspredelenie-zadach.md).
+    """
+    parents = {}
+    for i in issues:
+        p = i.get("parent")
+        if isinstance(p, dict):
+            parents.setdefault(p["key"], []).append(i["key"])
+
+    sibling_keys, links = set(), {}
+    for pkey in parents:
+        # Фильтра `Parent:` в языке запросов нет — состав дерева читается только
+        # через связи задачи.
+        data, _ = tpr.api(f"issues/{pkey}/links")
+        kids = [l["object"]["key"] for l in data
+                if (l.get("type") or {}).get("id") == "subtask" and l.get("direction") == "outward"]
+        links[pkey] = kids
+        sibling_keys.update(kids)
+    siblings = issues_by_key(sibling_keys)
+
+    out = {}
+    for pkey, mykeys in parents.items():
+        devs = []
+        for k in links.get(pkey, []):
+            sib = siblings.get(k)
+            if not sib or k in mykeys:
+                continue
+            is_dev = ("азработк" in (sib.get("summary") or "")
+                      or (sib.get("type") or {}).get("key") == "development")
+            if is_dev:
+                devs.append(sib)
+        live = [d for d in devs if (d.get("status") or {}).get("key") not in DEV_DONE]
+        for mk in mykeys:
+            if not devs:
+                out[mk] = ("нет подзадачи «Разработка»", [])
+            elif not live:
+                out[mk] = ("разработка закрыта — почему не на тесте?", devs)
+            elif any((d.get("status") or {}).get("key") in DEV_SOON for d in live):
+                out[mk] = ("разработка на ревью — придёт со дня на день", live)
+            elif any((d.get("status") or {}).get("key") in DEV_NOW for d in live):
+                out[mk] = ("разработка в работе", live)
+            elif all(not (d.get("assignee") or {}).get("id") for d in live):
+                out[mk] = ("у разработки нет исполнителя — не придёт", live)
+            else:
+                out[mk] = ("разработка не начата", live)
+    return out
+
+
 def orphan_qa(uid_login):
     """«Ничьё»: задачи в тестовых статусах, где исполнитель — не тестировщик.
 
@@ -493,34 +712,68 @@ def issue_line(issue, extra_hours=None):
 
 TABLE_HEAD = ("| Задача | Статус | В статусе | Проект | Оценка | Тема |\n"
               "|---|---|---|---|---|---|")
+# Та же таблица плюс колонка «Разработка»: чья подзадача и в каком она статусе.
+# Именно она и определяет, когда работа придёт на тест.
+TABLE_HEAD_DEV = ("| Задача | Статус | В статусе | Проект | Оценка | Тема | Разработка |\n"
+                  "|---|---|---|---|---|---|---|")
 
 
-def print_markdown(snapshot, norm, start, end, teams, pipeline, orphans, out=sys.stdout):
+def print_markdown(snapshot, norm, start, end, teams, pipeline, orphans, plans=None,
+                   console_note=None, releases=None, out=sys.stdout):
     w = out.write
     w(f"# Занятость и загрузка — снимок на {date.today().isoformat()}\n\n")
     w(f"Период: **{start.isoformat()} — {end.isoformat()}** "
-      f"({len(workdays(start, end))} рабочих дней, норма {norm:.0f} ч на человека).\n")
+      f"({len(workdays(start, end))} рабочих дней, календарная норма {norm:.0f} ч).\n")
     w(f"Команды: {', '.join(TEAMS.get(t, t) for t in teams)}.\n\n")
-    w("> Норма — календарная, **без учёта отпусков и болезней**: отсутствия ведутся\n"
-      "> руками в [team-load.md](../docs/company/team-load.md). Низкий процент —\n"
-      "> это вопрос, а не вывод.\n\n")
+    if console_note:
+        w(f"> **Часы только из Трекера:** {console_note}.\n"
+          "> Норма поэтому календарная, без учёта отпусков и болезней — отсутствия\n"
+          "> ведутся руками в [team-load.md](../docs/company/team-load.md).\n\n")
+    else:
+        w("> Присутствие берётся из консоли (StaffCop), списания — из Трекера.\n"
+          "> Отпуска и больничные учитывать отдельно не нужно: в присутствии их\n"
+          "> просто нет.\n\n")
 
     for team in teams:
         members = [s for s in snapshot if s["team"] == team]
         if not members:
             continue
         w(f"## {TEAMS.get(team, team)}\n\n")
-        w("| Человек | Списано / норма | Дней со списаниями | В работе | Ждёт его | "
-          "В плане | Ждёт не его | Закрыл |\n")
-        w("|---|---|---|---|---|---|---|---|\n")
+        has_presence = any(m.get("presence") for m in members)
+        if has_presence:
+            w("| Человек | Присутствие | Списано | Доля | Дней | В работе | Ждёт его | "
+              "В плане | Ждёт не его | Закрыл |\n")
+            w("|---|---|---|---|---|---|---|---|---|---|\n")
+        else:
+            w("| Человек | Списано / норма | Дней со списаниями | В работе | Ждёт его | "
+              "В плане | Ждёт не его | Закрыл |\n")
+            w("|---|---|---|---|---|---|---|---|\n")
         for s in members:
-            pct = f"{100 * s['hours'] / s['norm']:.0f} %" if s["norm"] else "—"
-            w(f"| {s['name']} | {fmt_h(s['hours'])} / {s['norm']:.0f} ч ({pct}) | "
-              f"{s['days_logged']} | {load_cell(s['active'])} | {load_cell(s['queue'])} | "
-              f"{load_cell(s['planned'])} | {len(s['waiting'])} | {len(s['closed'])} |\n")
+            p = s.get("presence")
+            if has_presence:
+                if p and p["activity"]:
+                    pres = f"{fmt_h(p['activity'])} ч / {p['activityDays']} дн."
+                    share = f"{100 * s['hours'] / p['activity']:.0f} %"
+                elif p and p["bound"]:
+                    pres, share = "**нет данных**", "—"
+                else:
+                    pres, share = "не подключён", "—"
+                w(f"| {s['name']} | {pres} | {fmt_h(s['hours'])} ч | {share} | "
+                  f"{s['days_logged']} | {load_cell(s['active'])} | {load_cell(s['queue'])} | "
+                  f"{load_cell(s['planned'])} | {len(s['waiting'])} | {len(s['closed'])} |\n")
+            else:
+                pct = f"{100 * s['hours'] / s['norm']:.0f} %" if s["norm"] else "—"
+                w(f"| {s['name']} | {fmt_h(s['hours'])} / {s['norm']:.0f} ч ({pct}) | "
+                  f"{s['days_logged']} | {load_cell(s['active'])} | {load_cell(s['queue'])} | "
+                  f"{load_cell(s['planned'])} | {len(s['waiting'])} | {len(s['closed'])} |\n")
         w("\n")
-        w("Формат ячейки — «задач / часов оценки»; `+N?` — столько задач без оценки,\n"
-          "их объём в сумму не вошёл.\n\n")
+        if has_presence:
+            w("**Присутствие** — время за компьютером по StaffCop, **списано** — часы\n"
+              "в Трекере. Это разные величины, складывать их нельзя; «доля» — сколько\n"
+              "присутствия дошло до Трекера. Присутствие уже учитывает отпуска и\n"
+              "выходные, поэтому сверять с календарной нормой (%s ч) незачем.\n\n" % f"{norm:.0f}")
+        w("Формат ячеек загрузки — «задач / часов оценки»; `+N?` — столько задач без\n"
+          "оценки, их объём в сумму не вошёл.\n\n")
 
         for s in members:
             w(f"### {s['name']} · `{s['login']}` · {s['role']}\n\n")
@@ -544,13 +797,43 @@ def print_markdown(snapshot, norm, start, end, teams, pipeline, orphans, out=sys
             if s["planned"]:
                 w(f"**В плане, работа ещё не пришла — {len(s['planned'])}**\n\n")
                 w("Назначено на него, но статус не позволяет взять: у тестировщика это\n"
-                  "подзадачи «Тестирование», ждущие сдачи разработки.\n\n")
-                w(f"{TABLE_HEAD}\n")
-                for i in sorted(s["planned"], key=lambda x: -(days_in_status(x) or 0))[:25]:
-                    w(issue_line(i) + "\n")
-                if len(s["planned"]) > 25:
-                    w(f"\n…и ещё {len(s['planned']) - 25}.\n")
-                w("\n")
+                  "подзадачи «Тестирование», ждущие, пока разработчик или тимлид переведёт\n"
+                  "свою подзадачу в «Можно тестировать».\n\n")
+                mine_plans = {k: v for k, v in (plans or {}).items()
+                              if k in {i["key"] for i in s["planned"]}}
+                if mine_plans:
+                    groups = defaultdict(list)
+                    for i in s["planned"]:
+                        groups[mine_plans.get(i["key"], ("прогноз не построен", []))[0]].append(i)
+                    order = ["разработка на ревью — придёт со дня на день",
+                             "разработка в работе",
+                             "разработка закрыта — почему не на тесте?",
+                             "разработка не начата",
+                             "у разработки нет исполнителя — не придёт",
+                             "нет подзадачи «Разработка»"]
+                    for label in order + [g for g in groups if g not in order]:
+                        rows = groups.get(label)
+                        if not rows:
+                            continue
+                        total, blind = est_sum(rows)
+                        w(f"*{label} — {len(rows)} задач, {fmt_h(total)} ч*"
+                          + (f" (+{blind} без оценки)" if blind else "") + "\n\n")
+                        w(f"{TABLE_HEAD_DEV}\n")
+                        for i in sorted(rows, key=lambda x: -(days_in_status(x) or 0)):
+                            devs = mine_plans.get(i["key"], ("", []))[1]
+                            who = ", ".join(
+                                f"{d['key']} {(d.get('status') or {}).get('display')}"
+                                f" ({(d.get('assignee') or {}).get('display') or 'без исполнителя'})"
+                                for d in devs[:3]) or "—"
+                            w(issue_line(i) + f" {who} |\n")
+                        w("\n")
+                else:
+                    w(f"{TABLE_HEAD}\n")
+                    for i in sorted(s["planned"], key=lambda x: -(days_in_status(x) or 0))[:25]:
+                        w(issue_line(i) + "\n")
+                    if len(s["planned"]) > 25:
+                        w(f"\n…и ещё {len(s['planned']) - 25}.\n")
+                    w("\n")
 
             if s["waiting"]:
                 keys = ", ".join(i["key"] for i in s["waiting"])
@@ -603,6 +886,49 @@ def print_markdown(snapshot, norm, start, end, teams, pipeline, orphans, out=sys
                       f"{fmt_h(r['est'])} | {r['summary'][:60]} |\n")
                 w("\n")
 
+    if releases is not None:
+        w("## Релизы приложения: когда открывается окно теста\n\n")
+        w("Задачи прилаги выпускаются **скоупом**: подзадача «Тестирование» не уезжает\n"
+          "на тест сама, как в админке, — она ждёт, пока релиз клиента дойдёт до стадии\n"
+          "«Внутренний QA». Поэтому «когда придёт» для прилаги читается отсюда, а не по\n"
+          "статусу соседней разработки.\n\n")
+        if not releases:
+            w("Активных релизов приложения нет либо консоль их не отдала.\n\n")
+        else:
+            w("| Клиент | Стадия сейчас | Окно внутреннего QA | Кто на QA | Релиз | Задач | Оценка |\n")
+            w("|---|---|---|---|---|---|---|\n")
+            for r in releases:
+                qa = r["qa"] or {}
+                qa_status = (qa.get("status") or {}).get("title") or "—"
+                start_p, end_p = qa.get("plannedStart"), qa.get("plannedEnd")
+                if start_p and end_p:
+                    window = f"{start_p} — {end_p} ({qa_status.lower()})"
+                    if qa_status == "Не начата" and end_p < date.today().isoformat():
+                        window += " ⚠️ **просрочено**"
+                else:
+                    window = "⚠️ **даты не заданы**"
+                planned = r["planned"] or "⚠️ **не задана**"
+                if r["overdue"]:
+                    planned += " ⚠️"
+                w(f"| {r['client']} | {r['stage']} | {window} | "
+                  f"{', '.join(r['qaWho']) or '⚠️ **не назначен**'} | {planned} | "
+                  f"{r['tasks'] if r['tasks'] is not None else '—'} | "
+                  f"{fmt_h(r['estHours']) + ' ч' if r['estHours'] else '⚠️ **нет оценок**'} |\n")
+            w("\n")
+            blind = [r["client"] for r in releases if not r["planned"]]
+            if blind:
+                w(f"**Плановая дата релиза не задана:** {', '.join(blind)}. По этим клиентам\n"
+                  f"окно теста не предсказывается вовсе — объём придёт без предупреждения.\n\n")
+            no_window = [r["client"] for r in releases
+                         if not ((r["qa"] or {}).get("plannedStart")
+                                 and (r["qa"] or {}).get("plannedEnd"))]
+            if no_window:
+                w(f"**Окно внутреннего QA не запланировано:** {', '.join(no_window)}.\n\n")
+            synced = {r["syncedAt"] for r in releases if r["syncedAt"]}
+            if synced:
+                w(f"Состав и часы релизов — снимок синхронизации с Трекером "
+                  f"({min(synced)} — {max(synced)}), а не живой запрос.\n\n")
+
     if orphans:
         w("## Ничьё: ждёт теста, но числится не на тестировщике\n\n")
         w(f"Задач — **{len(orphans)}** (очереди CRM, BUGREPORTS, SUPPORTDEV, тронутые\n"
@@ -647,9 +973,25 @@ def load_cell(issues):
 
 def red_flags(s, start, end):
     out = []
-    if s["norm"] and s["hours"] / s["norm"] < 0.5:
-        out.append(f"Списано {fmt_h(s['hours'])} из {s['norm']:.0f} ч нормы — "
-                   f"меньше половины. Отпуск, работа мимо Трекера или просадка?")
+    p = s.get("presence")
+    if p and p["bound"] and not p["activity"] and s["hours"]:
+        out.append(f"StaffCop не отдал ни одной минуты за период, хотя учётка привязана, "
+                   f"а в Трекер списано {fmt_h(s['hours'])} ч. Значит агент не собирает — "
+                   f"второго контура по человеку нет, и судить о его загрузке не по чему.")
+    elif p and p["activity"]:
+        share = s["hours"] / p["activity"]
+        if share < 0.5:
+            out.append(f"Присутствие {fmt_h(p['activity'])} ч за {p['activityDays']} дн., "
+                       f"списано {fmt_h(s['hours'])} ч — {100 * share:.0f} %. "
+                       f"Больше половины работы не доходит до Трекера.")
+        if p["activityDays"] < len(workdays(start, end)) - 1:
+            out.append(f"Присутствовал {p['activityDays']} дн. из "
+                       f"{len(workdays(start, end))} рабочих — отпуск, болезнь или отгулы. "
+                       f"Отметить в разделе «Отсутствия».")
+    elif s["norm"] and s["hours"] / s["norm"] < 0.5:
+        out.append(f"Списано {fmt_h(s['hours'])} из {s['norm']:.0f} ч календарной нормы — "
+                   f"меньше половины. Присутствия из консоли нет, поэтому отличить "
+                   f"отпуск от просадки нечем.")
     if not s["active"] and s["queue"]:
         out.append(f"Ни одной задачи в работе при очереди из {len(s['queue'])} — "
                    f"либо не переводит статусы, либо занят вне Трекера.")
@@ -671,7 +1013,8 @@ def red_flags(s, start, end):
     return out
 
 
-def print_json(snapshot, norm, start, end, pipeline, orphans, out=sys.stdout):
+def print_json(snapshot, norm, start, end, pipeline, orphans, plans=None,
+               console_note=None, releases=None, out=sys.stdout):
     def slim(i):
         return {
             "key": i["key"], "summary": i.get("summary"),
@@ -687,12 +1030,16 @@ def print_json(snapshot, norm, start, end, pipeline, orphans, out=sys.stdout):
         "generated": datetime.now().isoformat(timespec="seconds"),
         "period": {"from": start.isoformat(), "to": end.isoformat(),
                    "workdays": len(workdays(start, end)), "norm": norm},
+        "consoleNote": console_note,
+        "releaseWindows": releases,
         "people": [{
             "login": s["login"], "name": s["name"], "team": s["team"], "role": s["role"],
             "hours": s["hours"], "norm": s["norm"], "daysLogged": s["days_logged"],
+            "presence": s.get("presence"),
             "active": [slim(i) for i in s["active"]],
             "queue": [slim(i) for i in s["queue"]],
-            "planned": [slim(i) for i in s["planned"]],
+            "planned": [dict(slim(i), forecast=(plans or {}).get(i["key"], ("", []))[0] or None)
+                        for i in s["planned"]],
             "waiting": [i["key"] for i in s["waiting"]],
             "closed": [i["key"] for i in s["closed"]],
             "foreign": s["foreign"],
@@ -717,16 +1064,22 @@ def print_json(snapshot, norm, start, end, pipeline, orphans, out=sys.stdout):
 def print_csv(snapshot, out=sys.stdout):
     import csv
     wr = csv.writer(out)
-    wr.writerow(["Человек", "Логин", "Команда", "Роль", "Часы", "Норма", "Дней со списаниями",
-                 "В работе", "Ждёт его", "В плане", "Ждёт не его", "Закрыл"])
+    wr.writerow(["Человек", "Логин", "Команда", "Роль", "Присутствие", "Списано", "Доля",
+                 "Норма", "Дней со списаниями", "В работе", "Ждёт его", "В плане",
+                 "Ждёт не его", "Закрыл"])
     for s in snapshot:
+        p = s.get("presence") or {}
+        act = p.get("activity")
+        share = f"{100 * s['hours'] / act:.0f}" if act else ""
         wr.writerow([s["name"], s["login"], TEAMS.get(s["team"], s["team"]), s["role"],
-                     f"{s['hours']:.1f}".replace(".", ","), f"{s['norm']:.0f}",
+                     f"{act:.1f}".replace(".", ",") if act else "",
+                     f"{s['hours']:.1f}".replace(".", ","), share, f"{s['norm']:.0f}",
                      s["days_logged"], len(s["active"]), len(s["queue"]),
                      len(s["planned"]), len(s["waiting"]), len(s["closed"])])
 
 
-def save(snapshot, norm, start, end, teams, pipeline, orphans):
+def save(snapshot, norm, start, end, teams, pipeline, orphans, plans=None,
+         console_note=None, releases=None):
     root = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
     folder = os.path.join(root, "reports")
     os.makedirs(folder, exist_ok=True)
@@ -734,9 +1087,11 @@ def save(snapshot, norm, start, end, teams, pipeline, orphans):
     md = os.path.join(folder, base + ".md")
     js = os.path.join(folder, base + ".json")
     with open(md, "w") as fh:
-        print_markdown(snapshot, norm, start, end, teams, pipeline, orphans, out=fh)
+        print_markdown(snapshot, norm, start, end, teams, pipeline, orphans, plans,
+                       console_note, releases, out=fh)
     with open(js, "w") as fh:
-        print_json(snapshot, norm, start, end, pipeline, orphans, out=fh)
+        print_json(snapshot, norm, start, end, pipeline, orphans, plans, console_note,
+                   releases, out=fh)
     print(f"Сохранено:\n  {md}\n  {js}", file=sys.stderr)
 
 
@@ -753,6 +1108,13 @@ def main():
     ap.add_argument("--to", dest="date_to", help="конец периода ГГГГ-ММ-ДД")
     ap.add_argument("--format", choices=["md", "json", "csv"], default="md")
     ap.add_argument("--no-pipeline", action="store_true", help="без раздела «Что придёт»")
+    ap.add_argument("--no-console", action="store_true",
+                    help="не ходить в консоль за присутствием: только Трекер и "
+                         "календарная норма")
+    ap.add_argument("--forecast", action="store_true",
+                    help="для тестирования: по каждой задаче «в плане» — состояние "
+                         "соседней подзадачи «Разработка». Медленно, но отвечает на "
+                         "вопрос «что упадёт на этой неделе»")
     ap.add_argument("--save", action="store_true", help="сохранить в reports/ (.md и .json)")
     args = ap.parse_args()
 
@@ -780,20 +1142,45 @@ def main():
     if not people:
         bail("некого смотреть")
 
-    snapshot, norm, uid_login = collect(people, start, end)
+    if args.no_console:
+        console, console_note = {}, "отключено флагом --no-console"
+    else:
+        console, reason = console_hours(start, end)
+        console_note = reason if console is None else None
+        console = console or {}
+    snapshot, norm, uid_login = collect(people, start, end, console)
     qa_in_scope = "qa" in teams and not args.no_pipeline
     pipeline = pipeline_qa(date.today()) if qa_in_scope else []
     orphans = orphan_qa(uid_login) if qa_in_scope else []
 
+    # Окна теста по релизам прилаги — только когда в охвате тестирование и консоль
+    # доступна: без них раздел стал бы пустой рамкой.
+    releases = None
+    if qa_in_scope and not args.no_console:
+        releases, rel_err = release_windows()
+        if rel_err:
+            releases = []
+            console_note = console_note or rel_err
+
+    # Прогноз считается только для тестирования и только по флагу: он стоит одного
+    # запроса на каждого родителя, а у одного тестировщика их бывает под полсотни.
+    plans = {}
+    if args.forecast:
+        planned = [i for s_ in snapshot if s_["team"] == "qa" for i in s_["planned"]]
+        if planned:
+            plans = forecast(planned)
+
     if args.save:
-        save(snapshot, norm, start, end, teams, pipeline, orphans)
+        save(snapshot, norm, start, end, teams, pipeline, orphans, plans, console_note,
+             releases)
         return
     if args.format == "json":
-        print_json(snapshot, norm, start, end, pipeline, orphans)
+        print_json(snapshot, norm, start, end, pipeline, orphans, plans, console_note, releases)
     elif args.format == "csv":
         print_csv(snapshot)
     else:
-        print_markdown(snapshot, norm, start, end, teams, pipeline, orphans)
+        print_markdown(snapshot, norm, start, end, teams, pipeline, orphans, plans,
+                       console_note, releases)
 
 
 if __name__ == "__main__":
