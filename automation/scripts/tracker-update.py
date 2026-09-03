@@ -57,7 +57,7 @@ wiki-push.py. Уведомить: --notify.
 полей организации. Опечатка отсекается на сухом прогоне, а не молча
 записывается мимо. Сухой прогон печатает «было → станет» по каждой задаче.
 
-Как и у tracker-tag.py, --apply кладёт в reports/ журнал: правка полей
+Как и у tracker-tag.py, --apply кладёт в reports/<день>/ журнал: правка полей
 задним числом иначе неотличима от того, что поля были заполнены всегда.
 
 Коды возврата: 0 — всё прошло; 1 — часть или всё не прошло;
@@ -335,12 +335,15 @@ def shown(value) -> str:
 
 
 def journal(lines: list[str]) -> str:
-    """Журнал правки полей — в reports/ (папка вне git), как у tracker-tag.py."""
+    """Журнал правки полей — в reports/<день>/ (папка вне git), как у tracker-tag.py."""
     repo = Path(__file__).resolve().parents[2]
-    out_dir = repo / "reports"
+    now = datetime.now()
+    # Журнал ложится в папку дня; в имени файла остаётся время — за день правок
+    # бывает несколько, и различает их именно оно.
+    out_dir = repo / "reports" / now.strftime("%Y-%m-%d")
     out_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%Y-%m-%d-%H%M")
-    path = out_dir / f"tracker-update-fields-{stamp}.log"
+    stamp = now.strftime("%Y-%m-%d-%H%M")
+    path = out_dir / f"tracker-update-fields-{now.strftime('%H%M')}.log"
     with path.open("w", encoding="utf-8") as fh:
         fh.write(f"# Правка полей, {stamp}\n")
         fh.write("# Команда: automation/scripts/tracker-update.py "

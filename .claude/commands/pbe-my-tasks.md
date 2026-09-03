@@ -1,5 +1,5 @@
 ---
-description: Что висит на мне в Трекере — ревью, вопросы ко мне, работа, оценка; разбор группами и снимок в reports/
+description: Что висит на мне в Трекере — ревью, вопросы ко мне, работа, оценка; разбор группами и снимок в reports/<день>/
 argument-hint: "[--release admin-09] [--projects 931 932] [--no-improvements] [--pending-days 90]"
 allowed-tools: Bash(automation/scripts/my-tasks.py:*), Bash(automation/scripts/tracker-issue.sh:*), Bash(date:*), Read, Grep
 ---
@@ -12,8 +12,8 @@ allowed-tools: Bash(automation/scripts/my-tasks.py:*), Bash(automation/scripts/t
 automation/scripts/my-tasks.py <аргументы> --format json --save
 ```
 
-`--save` обязателен: он кладёт `.md` и `.json` в `reports/` и он же даёт дельту к
-прошлому снимку при следующем вызове. Читай `.json` — в нём те же строки, но с
+`--save` обязателен: он кладёт `.md` и `.json` в папку сегодняшнего дня
+`reports/<день>/` и он же даёт дельту к прошлому снимку при следующем вызове. Читай `.json` — в нём те же строки, но с
 полями `sources`, `sprints`, `waitingFor`, по которым видно, **почему** задача
 попала в список.
 

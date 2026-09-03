@@ -9,7 +9,7 @@
     tracker-untagged.py --no-client              # шире: нет тега-мнемоники клиента
     tracker-untagged.py --min 1                  # спрятать мелочь до часа
     tracker-untagged.py --format csv > untagged.csv
-    tracker-untagged.py --save                   # → reports/ (папка вне git)
+    tracker-untagged.py --save                   # → reports/<день>/ (папка вне git)
 
 По [регламенту очередей](../../docs/regulations/tracker-queues.md) мнемоника клиента
 обязана стоять тегом задачи: по тегу собирается разрез трудозатрат по клиентам.
@@ -291,22 +291,24 @@ def print_csv(bad, out=sys.stdout):
 
 
 def save(rows, bad, label, args):
-    """Пишет .md и .csv в reports/ (папка в .gitignore) или в указанный каталог."""
-    # Каталог по умолчанию — от расположения скрипта, а не от cwd.
+    """Пишет .md и .csv в reports/<день>/ (папка в .gitignore) или в указанный каталог."""
+    # Каталог по умолчанию — от расположения скрипта, а не от cwd. Внутри reports/
+    # разбор по дню сборки, поэтому даты в имени файла нет. Явный каталог в
+    # --save берётся как есть: раз указали руками, раскладывать не нам.
     repo = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    out_dir = args.save or os.path.join(repo, "reports")
+    stamp = datetime.now().strftime("%Y-%m-%d")
+    out_dir = args.save or os.path.join(repo, "reports", stamp)
     os.makedirs(out_dir, exist_ok=True)
 
-    stamp = datetime.now().strftime("%Y-%m-%d")
     slug = label.replace(" … ", "_").replace(" ", "")
-    base = os.path.join(out_dir, f"tracker-untagged-{slug}-{stamp}")
+    base = os.path.join(out_dir, f"tracker-untagged-{slug}")
 
     with open(f"{base}.md", "w") as fh:
         print(f"# Списания в задачи без тегов: {label}\n", file=fh)
         print(f"Собран {stamp} командой `automation/scripts/tracker-untagged.py "
               f"{' '.join(sys.argv[1:])}`.  ", file=fh)
         print("Данные живые — на момент сборки; в git не коммитится "
-              "(см. [reports/README.md](README.md)).\n", file=fh)
+              "(см. [reports/README.md](../README.md)).\n", file=fh)
         print_markdown(rows, bad, label, args, out=fh)
 
     with open(f"{base}.csv", "w", newline="") as fh:
@@ -335,7 +337,7 @@ def main():
                    help="не показывать задачи меньше N часов (в итогах учитываются)")
     p.add_argument("--format", choices=["md", "csv", "json"], default="md")
     p.add_argument("--save", nargs="?", const="", metavar="DIR",
-                   help="сохранить отчёт (.md и .csv) в reports/ или в указанный каталог")
+                   help="сохранить отчёт (.md и .csv) в reports/<день>/ или в указанный каталог")
     args = p.parse_args()
 
     # credentials() из соседнего модуля выходит с кодом 1; здесь код 3 — «нет

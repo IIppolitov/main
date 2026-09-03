@@ -70,7 +70,8 @@ git -C ../pbeadmin log <TAG> --grep='<KEY>' --name-only --pretty=format:'' | sor
 ## 5. Документы
 
 По шаблонам `docs/templates/release-actions.md` и `docs/templates/patch-notes.md`,
-в `reports/RELEASE_ACTIONS_<дата>.md` и `reports/PATCH_NOTES_<дата>.md`.
+в папку сегодняшнего дня: `reports/<день>/RELEASE_ACTIONS.md` и
+`reports/<день>/PATCH_NOTES.md`.
 Группировка по клиентам, в конце «Все клиенты».
 
 Release actions — сначала, patch notes — по ним.

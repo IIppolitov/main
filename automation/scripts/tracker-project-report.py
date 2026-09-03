@@ -6,7 +6,7 @@
     tracker-project-report.py 926 930
     tracker-project-report.py https://tracker.yandex.ru/pages/projects/926/issues
     tracker-project-report.py 926 --format csv > sprint13.csv
-    tracker-project-report.py 926 930 --save                # → reports/ (папка вне git)
+    tracker-project-report.py 926 930 --save                # → reports/<день>/ (папка вне git)
     tracker-project-report.py 926 930 --changelog CRM-914   # печать истории одной задачи
 
 Возвраты считаются по истории статусов (changelog), а не по счётчику переоткрытий:
@@ -585,11 +585,14 @@ def print_changelog(key):
 
 
 def save(projects, args):
-    """Пишет .md и .csv в reports/ (папка в .gitignore) или в указанный каталог."""
+    """Пишет .md и .csv в reports/<день>/ (папка в .gitignore) или в указанный каталог."""
     # Каталог по умолчанию — от расположения скрипта, а не от cwd: отчёт должен
-    # лечь в reports/ репозитория, откуда бы скрипт ни запускали.
+    # лечь в reports/ репозитория, откуда бы скрипт ни запускали. Внутри reports/
+    # разбор по дню сборки, поэтому даты в имени файла нет. Явный каталог в
+    # --save берётся как есть: раз указали руками, раскладывать не нам.
     repo = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    out_dir = args.save or os.path.join(repo, "reports")
+    stamp = datetime.now().strftime("%Y-%m-%d")
+    out_dir = args.save or os.path.join(repo, "reports", stamp)
     os.makedirs(out_dir, exist_ok=True)
 
     # В файл разбор возвратов пишется всегда: место дешевле, чем повторный запуск
@@ -597,8 +600,7 @@ def save(projects, args):
     args.returns = True
 
     ids = "-".join(str(i["id"]) for i, _ in projects)
-    stamp = datetime.now().strftime("%Y-%m-%d")
-    base = os.path.join(out_dir, f"tracker-projects-{ids}-{stamp}")
+    base = os.path.join(out_dir, f"tracker-projects-{ids}")
 
     with open(f"{base}.md", "w") as fh:
         stdout, sys.stdout = sys.stdout, fh
@@ -607,7 +609,7 @@ def save(projects, args):
             print(f"Собран {stamp} командой "
                   f"`automation/scripts/tracker-project-report.py {' '.join(args.projects)}`.  ")
             print("Данные живые — на момент сборки; в git не коммитится "
-                  "(см. [reports/README.md](README.md)).")
+                  "(см. [reports/README.md](../README.md)).")
             print_markdown(projects, args)
         finally:
             sys.stdout = stdout
@@ -640,7 +642,7 @@ def main():
                    help="вместо отчёта напечатать историю статусов одной задачи")
     p.add_argument("--jobs", type=int, default=8, help="параллельных запросов (по умолчанию 8)")
     p.add_argument("--save", nargs="?", const="", metavar="DIR",
-                   help="сохранить отчёт (.md и .csv) в reports/ или в указанный каталог")
+                   help="сохранить отчёт (.md и .csv) в reports/<день>/ или в указанный каталог")
     args = p.parse_args()
 
     TOKEN, ORG = credentials()

@@ -24,7 +24,7 @@
 
 | Слой | Что это | Где живёт | Кто ведёт |
 |---|---|---|---|
-| Факты | задачи и статусы (Трекер), присутствие и релизы (консоль), PR (GitHub) | `reports/team-load-*.md` и `.json`, вне git | скрипты, воспроизводится за минуту |
+| Факты | задачи и статусы (Трекер), присутствие и релизы (консоль), PR (GitHub) | `reports/<день>/team-load-*.md` и `.json`, вне git | скрипты, воспроизводится за минуту |
 | Состояние | этот документ: срез фактов + суждение | `docs/company/team-load.md` | команда `/pbe-zagruzka`, дальше правится руками |
 | Норма | как *должно* планироваться | [регламент, этапы 8 и 9](../regulations/crm-lifecycle/) | директор департамента ИТ |
 
@@ -248,7 +248,7 @@ automation/scripts/github-activity.py --days 14 --save
 ### Ничьё: ждёт теста, но числится не на тестировщике
 
 21 задача в очередях `CRM`, `BUGREPORTS`, `SUPPORTDEV`, тронутых за последние
-90 дней. Полный список — в снимке `reports/team-load-ba-qa-*.md`. Крупным планом:
+90 дней. Полный список — в снимке `reports/<день>/team-load-ba-qa.md`. Крупным планом:
 
 | Кому досталось по факту | Задач | Что это |
 |---|---|---|
@@ -278,7 +278,7 @@ automation/scripts/github-activity.py --days 14 --save
 тестирования: пока они не влиты, объём теста неизвестен, а после влития придёт
 разом.
 
-Полностью — `reports/github-activity-*.md`.
+Полностью — `reports/<день>/github-activity.md`.
 
 > **`amarenkov` (Маренков Алексей) пишет в `pbeadmin` и `pbeadmin_onekey`, но его
 > нет в [оргструктуре](org-structure.md).** В Трекере учётка есть
@@ -371,9 +371,9 @@ automation/scripts/github-activity.py --days 14 --save
 
 Полный разбор загрузки тестирования с правками в Трекере. Разослано письмом
 «Статус тестирования и приоритеты недели до релиза 15.09» плюс два сообщения
-в чат тестирования. Черновики — в `reports/pismo-status-testirovanie-2026-09-02.md`,
-`reports/soobshhenie-v-chat-posle-pisma-2026-09-02.md`,
-`reports/soobshhenie-polina-2026-09-02.md` (папка вне git, воспроизводятся).
+в чат тестирования. Черновики — в `reports/2026-09-02/`:
+`pismo-status-testirovanie.md`, `soobshhenie-v-chat-posle-pisma.md`,
+`soobshhenie-polina.md` (папка вне git, воспроизводятся).
 
 ### Что изменено в Трекере
 

@@ -9,7 +9,7 @@
     tracker-tag.py --normalize --apply
 
 **По умолчанию скрипт ничего не пишет** — печатает, что было бы сделано. Запись
-включается `--apply`, и тогда же в reports/ ложится журнал изменений: массовая
+включается `--apply`, и тогда же в reports/<день>/ ложится журнал изменений: массовая
 правка тегов задним числом иначе неотличима от того, что теги стояли всегда.
 
 Пара режимов, а не один:
@@ -191,12 +191,15 @@ def plan_rename(pairs):
 
 
 def journal(lines, mode):
-    """Журнал массовой правки — в reports/ (папка вне git)."""
+    """Журнал массовой правки — в reports/<день>/ (папка вне git)."""
     repo = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    out_dir = os.path.join(repo, "reports")
+    now = datetime.now()
+    # Журнал ложится в папку дня; в имени файла остаётся время — за день правок
+    # бывает несколько, и различает их именно оно.
+    out_dir = os.path.join(repo, "reports", now.strftime("%Y-%m-%d"))
     os.makedirs(out_dir, exist_ok=True)
-    stamp = datetime.now().strftime("%Y-%m-%d-%H%M")
-    path = os.path.join(out_dir, f"tracker-tag-{mode}-{stamp}.log")
+    stamp = now.strftime("%Y-%m-%d-%H%M")
+    path = os.path.join(out_dir, f"tracker-tag-{mode}-{now.strftime('%H%M')}.log")
     with open(path, "w") as fh:
         fh.write(f"# Правка тегов, режим {mode}, {stamp}\n")
         fh.write(f"# Команда: automation/scripts/tracker-tag.py {' '.join(sys.argv[1:])}\n")

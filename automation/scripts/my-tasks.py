@@ -9,7 +9,7 @@
     my-tasks.py --pending-days 0                 # + забытые флаги «ждут ответа» старше 90 дней
     my-tasks.py --who aseleznev                  # чужая очередь (в пределах своих прав)
     my-tasks.py --format json                    # машиночитаемо — под команду /pbe-my-tasks
-    my-tasks.py --save                           # .md и .json в reports/ (папка вне git)
+    my-tasks.py --save                           # .md и .json в reports/<день>/ (папка вне git)
 
 Отвечает на один вопрос: **что ждёт меня и в каком порядке за это браться**. Задачи
 разложены по тому, какого действия от меня ждут: ревью, ответ, оценка, разработка.
@@ -406,13 +406,15 @@ def compare(rows, previous):
 
 
 def previous_snapshot(reports_dir):
+    """Последний снимок из папок-дней: reports/<день>/moi-zadachi.json."""
     if not os.path.isdir(reports_dir):
         return None
-    files = sorted(f for f in os.listdir(reports_dir)
-                   if re.match(r"^moi-zadachi-\d{4}-\d{2}-\d{2}.*\.json$", f))
-    if not files:
+    days = sorted(d for d in os.listdir(reports_dir)
+                  if re.fullmatch(r"\d{4}-\d{2}-\d{2}", d)
+                  and os.path.isfile(os.path.join(reports_dir, d, "moi-zadachi.json")))
+    if not days:
         return None
-    with open(os.path.join(reports_dir, files[-1]), encoding="utf-8") as fh:
+    with open(os.path.join(reports_dir, days[-1], "moi-zadachi.json"), encoding="utf-8") as fh:
         return json.load(fh)
 
 
@@ -427,7 +429,7 @@ def main():
                         help="флаг «ждут моего ответа» учитывать, если задачу трогали за N дней "
                              "(по умолчанию 90; 0 — брать все)")
     parser.add_argument("--format", choices=["md", "json"], default="md")
-    parser.add_argument("--save", action="store_true", help="положить .md и .json в reports/")
+    parser.add_argument("--save", action="store_true", help="положить .md и .json в reports/<день>/")
     args = parser.parse_args()
 
     tpr.TOKEN, tpr.ORG = tpr.credentials()
@@ -482,9 +484,13 @@ def main():
         print(render(rows, args, release, delta, stale_pending))
 
     if args.save:
+        # Снимок ложится в папку дня: reports/2026-09-03/moi-zadachi.md. Дата —
+        # в имени папки, в имени файла её нет; повторный запуск за день
+        # перезаписывает снимок, дельта считается от предыдущего дня.
         stamp = datetime.now().strftime("%Y-%m-%d")
-        os.makedirs(reports_dir, exist_ok=True)
-        base = os.path.join(reports_dir, f"moi-zadachi-{stamp}")
+        day_dir = os.path.join(reports_dir, stamp)
+        os.makedirs(day_dir, exist_ok=True)
+        base = os.path.join(day_dir, "moi-zadachi")
         with open(base + ".md", "w", encoding="utf-8") as fh:
             fh.write(render(rows, args, release, delta, stale_pending))
         with open(base + ".json", "w", encoding="utf-8") as fh:

@@ -9,7 +9,7 @@
     team-load.py --from 2026-08-18 --to 2026-09-01
     team-load.py --days 30
     team-load.py --format json               # машиночитаемо — под команду /pbe-zagruzka
-    team-load.py --save                      # → reports/ (папка вне git)
+    team-load.py --save                      # → reports/<день>/ (папка вне git)
 
 Отвечает на четыре вопроса по каждому человеку: **что делает сейчас**, **что стоит
 в очереди на него**, **что он закрыл за период** и **сколько часов он списал против
@@ -820,7 +820,7 @@ def print_markdown(snapshot, norm, start, end, teams, pipeline, orphans, plans=N
     if console_note:
         w(f"> **Часы только из Трекера:** {console_note}.\n"
           "> Норма поэтому календарная, без учёта отпусков и болезней — отсутствия\n"
-          "> ведутся руками в [team-load.md](../docs/company/team-load.md).\n\n")
+          "> ведутся руками в [team-load.md](../../docs/company/team-load.md).\n\n")
     else:
         w("> Присутствие берётся из консоли (StaffCop), списания — из Трекера.\n"
           "> Отпуска и больничные учитывать отдельно не нужно: в присутствии их\n"
@@ -1054,7 +1054,7 @@ def print_markdown(snapshot, norm, start, end, teams, pipeline, orphans, plans=N
 
     if gaps:
         w("## Разработчик назначен, тестировщик — нет\n\n")
-        w(f"Задач — **{len(gaps)}**. По [этапу 9](../docs/regulations/crm-lifecycle/09-raspredelenie-zadach.md)\n"
+        w(f"Задач — **{len(gaps)}**. По [этапу 9](../../docs/regulations/crm-lifecycle/09-raspredelenie-zadach.md)\n"
           "(4.3.1) тимлид назначает исполнителей подзадач «Разработка» и «Тестирование»\n"
           "одной сессией. Здесь первое сделано, второе — нет: работа доедет до «Можно\n"
           "тестировать» и станет ничьей.\n\n")
@@ -1072,7 +1072,7 @@ def print_markdown(snapshot, norm, start, end, teams, pipeline, orphans, plans=N
         w("## Ничьё: ждёт теста, но числится не на тестировщике\n\n")
         w(f"Задач — **{len(orphans)}** (очереди CRM, BUGREPORTS, SUPPORTDEV, тронутые\n"
           f"за последние {ORPHAN_FRESH_DAYS} дней). Формально они в очереди на тест, фактически\n"
-          f"исполнитель другой: [этап 9](../docs/regulations/crm-lifecycle/09-raspredelenie-zadach.md)\n"
+          f"исполнитель другой: [этап 9](../../docs/regulations/crm-lifecycle/09-raspredelenie-zadach.md)\n"
           f"(4.3.1) требует назначить тестировщика, и без этого шага задача так и\n"
           f"остаётся на менеджере клиента с этапа 5.\n\n")
         w("| Задача | Статус | В статусе | Числится на | Проект | Тема |\n|---|---|---|---|---|---|\n")
@@ -1240,9 +1240,11 @@ def print_csv(snapshot, out=sys.stdout):
 def save(snapshot, norm, start, end, teams, pipeline, orphans, plans=None,
          console_note=None, releases=None, gaps=None, traces=None):
     root = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
-    folder = os.path.join(root, "reports")
+    # Отчёт ложится в папку дня: reports/2026-09-03/имя.md. Дата — в имени
+    # папки, в имени файла её нет.
+    folder = os.path.join(root, "reports", date.today().isoformat())
     os.makedirs(folder, exist_ok=True)
-    base = f"team-load-{'-'.join(teams)}-{date.today().isoformat()}"
+    base = f"team-load-{'-'.join(teams)}"
     md = os.path.join(folder, base + ".md")
     js = os.path.join(folder, base + ".json")
     with open(md, "w") as fh:
@@ -1277,7 +1279,7 @@ def main():
                     help="для тестирования: по каждой задаче «в плане» — состояние "
                          "соседней подзадачи «Разработка». Медленно, но отвечает на "
                          "вопрос «что упадёт на этой неделе»")
-    ap.add_argument("--save", action="store_true", help="сохранить в reports/ (.md и .json)")
+    ap.add_argument("--save", action="store_true", help="сохранить в reports/<день>/ (.md и .json)")
     args = ap.parse_args()
 
     if args.days < 1:

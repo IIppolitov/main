@@ -5,7 +5,7 @@
 обмена: в Mail вставляется обычным Cmd+V с сохранением жирного, списков и
 ссылок. Markdown-разметка (##, **, [](), `) в результат не попадает.
 
-    automation/scripts/md2rtf.py reports/pismo-...-2026-08-19.md
+    automation/scripts/md2rtf.py reports/2026-09-03/pismo-....md
     automation/scripts/md2rtf.py письмо.md --no-copy --keep-html
 
 Поддерживается подмножество markdown, которого хватает для писем: заголовки,

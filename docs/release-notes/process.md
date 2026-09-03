@@ -33,7 +33,7 @@
 ## 1. Собрать перечень задач
 
 ```bash
-automation/scripts/tracker-project-report.py 895 926 > reports/release-list.md
+automation/scripts/tracker-project-report.py 895 926 > reports/2026-08-18/release-list.md
 ```
 
 Скрипт принимает и ссылки целиком, и несколько проектов за вызов. В таблице
@@ -52,7 +52,7 @@ automation/scripts/tracker-project-report.py 895 926 > reports/release-list.md
 ## 2. Выгрузить тела задач
 
 ```bash
-automation/scripts/tracker-issue.sh CRM-594 CRM-914 CRM-980 > reports/release-issues.md
+automation/scripts/tracker-issue.sh CRM-594 CRM-914 CRM-980 > reports/2026-08-18/release-issues.md
 ```
 
 Ключи перечисляются через пробел, все задачи релиза — одним вызовом. Флаг
@@ -107,11 +107,11 @@ git -C ../pbeadmin for-each-ref --sort=-creatordate \
 ## 5. Собрать документы
 
 По шаблонам [release-actions.md](../templates/release-actions.md) и
-[patch-notes.md](../templates/patch-notes.md), в `reports/`:
+[patch-notes.md](../templates/patch-notes.md), в папке дня сборки:
 
 ```
-reports/RELEASE_ACTIONS_2026-08-18.md
-reports/PATCH_NOTES_2026-08-18.md
+reports/2026-08-18/RELEASE_ACTIONS.md
+reports/2026-08-18/PATCH_NOTES.md
 ```
 
 **Группировка в обоих — по клиентам**, в конце отдельный блок «Все клиенты» для

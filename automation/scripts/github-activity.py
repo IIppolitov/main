@@ -7,7 +7,7 @@
     github-activity.py --from 2026-08-01 --to 2026-08-31
     github-activity.py --who vznaida RusGosuNagib
     github-activity.py --format json
-    github-activity.py --save                # → reports/ (папка вне git)
+    github-activity.py --save                # → reports/<день>/ (папка вне git)
 
 Отвечает на вопрос «чем занята разработка», который для планирования тестирования
 важнее собственных цифр тестировщиков: объём теста задаёт не тестировщик, а темп
@@ -220,9 +220,11 @@ def print_json(people, start, end, out=sys.stdout):
 
 def save(people, start, end):
     root = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
-    folder = os.path.join(root, "reports")
+    # Отчёт ложится в папку дня: reports/2026-09-03/имя.md. Дата — в имени
+    # папки, в имени файла её нет.
+    folder = os.path.join(root, "reports", date.today().isoformat())
     os.makedirs(folder, exist_ok=True)
-    base = f"github-activity-{date.today().isoformat()}"
+    base = "github-activity"
     md, js = os.path.join(folder, base + ".md"), os.path.join(folder, base + ".json")
     with open(md, "w") as fh:
         print_markdown(people, start, end, out=fh)
@@ -238,7 +240,7 @@ def main():
     ap.add_argument("--from", dest="date_from", help="начало периода ГГГГ-ММ-ДД")
     ap.add_argument("--to", dest="date_to", help="конец периода ГГГГ-ММ-ДД")
     ap.add_argument("--format", choices=["md", "json"], default="md")
-    ap.add_argument("--save", action="store_true", help="сохранить в reports/")
+    ap.add_argument("--save", action="store_true", help="сохранить в reports/<день>/")
     args = ap.parse_args()
 
     today = date.today()
