@@ -808,11 +808,11 @@ def _b3(t):
             if st["queue"]["key"] == "BUGREPORTS" and st["status"]["key"] not in CLOSED_STATUSES]
 
 
-@rule("Б-5", "warn", 11, "У багрепорта назначен исполнитель — тимлид команды",
+@rule("Б-5", "warn", 11, "У багрепорта назначен исполнитель",
       "11-testirovanie-i-revju.md, 4.5.4")
 def _b5(t):
-    return [(st["key"], "исполнитель не назначен: по 4.5.4 багрепорт назначается "
-                        "на тимлида команды, в чьей зоне дефект")
+    return [(st["key"], "исполнитель не назначен: по 4.5.4 он определяется родителем — "
+                        "разработчик подзадачи «Разработка», иначе тимлид команды")
             for st in t.all_tasks
             if st["queue"]["key"] == "BUGREPORTS"
             and st["status"]["key"] not in CLOSED_STATUSES
