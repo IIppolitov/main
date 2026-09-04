@@ -26,6 +26,7 @@ tracker-create.py: такой текст надо вычитать до отпр
     ./tracker-update.py CRM-131 --assignee dantonova --apply
     ./tracker-update.py BUGREPORTS-150 --parent CRM-1225 --apply
     ./tracker-update.py CRM-131 --field "Срочность БА=3" --apply
+    ./tracker-update.py CRM-1234 --field-file testPlan=plan.txt --apply
 
 Ключей можно передать несколько — одно и то же уходит в каждую задачу.
 Типовой случай: ответ команде плюс та же справка в соседние задачи; для
@@ -51,6 +52,16 @@ wiki-push.py. Уведомить: --notify.
     --component ИМЯ       компонент команды, флаг можно повторить
     --parent KEY          родитель: задача становится подзадачей KEY
     --field ИМЯ=ЗНАЧЕНИЕ  любое другое поле по русскому названию либо id
+    --field-file ИМЯ=ФАЙЛ то же поле, но значением берётся файл целиком
+
+Многострочный текст (артефакты задачи: «Изменения для пользователя», «План
+тестирования», «Действия релиза») передаётся только через --field-file: такой
+текст вычитывают до отправки, а в командной строке этого не сделать. Поля
+очереди CRM разметку НЕ рендерят — в файле должен лежать плоский текст.
+
+Имя поля надёжнее указывать ключом (`testPlan`, `releaseActions`), а не русским
+названием: названия заводили руками, и в них живут опечатки — поле «Ссылки на
+Pull Rrequests» ищется только по ключу `linksToPullRequests`.
 
 Значения проверяются ДО записи по справочникам Трекера: исполнитель ищется
 среди сотрудников, компонент — среди компонентов очереди, имя поля — среди
@@ -334,13 +345,40 @@ def shown(value) -> str:
     return str(value)
 
 
+def block(label: str, text: str, limit: int = 40) -> str:
+    """Длинное значение — отдельным блоком, а не строкой «было → станет».
+
+    Артефакты задачи занимают десятки строк, и в одну строку отчёта они
+    превращаются в кашу, по которой ничего не вычитать. Сухой прогон — это
+    последнее место, где текст видно целиком перед записью, поэтому он и
+    печатается целиком; режется только заведомо длинное «было»."""
+    if text == "—":
+        return f"    {label}: —"
+    lines = text.splitlines() or [text]
+    cut = ""
+    if len(lines) > limit:
+        cut = f"\n    │ … ещё {len(lines) - limit} строк(и)"
+        lines = lines[:limit]
+    body = "\n".join("    │ " + ln for ln in lines)
+    return f"    {label} ({len(text)} симв., {len(text.splitlines())} стр.):\n{body}{cut}"
+
+
 def journal(lines: list[str]) -> str:
     """Журнал правки полей — в reports/<день>/ (папка вне git), как у tracker-tag.py."""
     repo = Path(__file__).resolve().parents[2]
     now = datetime.now()
     # Журнал ложится в папку дня; в имени файла остаётся время — за день правок
     # бывает несколько, и различает их именно оно.
-    out_dir = repo / "reports" / now.strftime("%Y-%m-%d")
+    #
+    # Папка зависит от того, откуда скрипт запущен. В рабочем пространстве это
+    # reports/<день>/ — она есть и исключена из git. В продуктовом репозитории,
+    # куда скрипт копируется как .claude/scripts/, такой папки нет, и заводить
+    # её там нельзя: reports/ в pbeadmin или pbeapp — это мусор в чужом git.
+    if (repo / "reports").is_dir():
+        out_dir = repo / "reports" / now.strftime("%Y-%m-%d")
+    else:
+        base = os.environ.get("XDG_CACHE_HOME") or (Path.home() / ".cache")
+        out_dir = Path(base) / "pbe-tracker-update" / now.strftime("%Y-%m-%d")
     out_dir.mkdir(parents=True, exist_ok=True)
     stamp = now.strftime("%Y-%m-%d-%H%M")
     path = out_dir / f"tracker-update-fields-{now.strftime('%H%M')}.log"
@@ -426,7 +464,13 @@ def build_field_patch(tracker: "Tracker", key: str, issue: dict,
             return None
         fid = field.get("id")
         payload[fid] = value
-        report.append(f"  {name}: {shown(issue.get(fid))} → {shown(value)}")
+        was, will = shown(issue.get(fid)), shown(value)
+        if "\n" in was or "\n" in will or len(was) > 100 or len(will) > 100:
+            report.append(f"  {name}:")
+            report.append(block("было", was, limit=12))
+            report.append(block("станет", will))
+        else:
+            report.append(f"  {name}: {was} → {will}")
 
     return payload, report
 
@@ -517,7 +561,11 @@ def main() -> int:
                     help="родитель: задача становится подзадачей KEY")
     ap.add_argument("--field", action="append", metavar="ИМЯ=ЗНАЧЕНИЕ",
                     default=[],
-                    help="любое другое поле по русскому названию либо id")
+                    help="любое другое поле по русскому названию, ключу либо id")
+    ap.add_argument("--field-file", action="append", metavar="ИМЯ=ФАЙЛ",
+                    default=[],
+                    help="то же поле, но значение берётся из файла целиком — "
+                         "для многострочного текста")
     ap.add_argument("--apply", action="store_true",
                     help="выполнить запись (по умолчанию — сухой прогон)")
     ap.add_argument("--notify", action="store_true",
@@ -528,20 +576,40 @@ def main() -> int:
         ap.error("--unassign и --assignee взаимоисключимы")
 
     fields_mode = bool(args.assignee or args.unassign or args.component or args.parent
-                       or args.field)
+                       or args.field or args.field_file)
     if fields_mode and (args.comment or args.description):
         print("Правка полей не совмещается с --comment и --description: "
               "режим один за вызов.", file=sys.stderr)
         return 2
     if not fields_mode and not (args.comment or args.description):
-        print("Не указано, что делать: --comment, --description либо флаги "
-              "правки полей (--assignee / --unassign / --component / --parent / --field).",
-              file=sys.stderr)
+        print("Не указано, что делать: --comment, --description либо флаги правки "
+              "полей (--assignee / --unassign / --component / --parent / --field / "
+              "--field-file).", file=sys.stderr)
         return 2
 
     pairs = parse_pairs(args.field)
     if pairs is None:
         return 2
+
+    # --field-file подмешивается к --field: дальше по коду они неотличимы, разница
+    # только в том, откуда взялось значение. Файл читается целиком и как есть —
+    # переносы строк в тексте артефакта значимы, схлопывать их нельзя.
+    file_pairs = parse_pairs(args.field_file)
+    if file_pairs is None:
+        return 2
+    for name, raw_path in file_pairs:
+        src = Path(raw_path)
+        if not src.is_file():
+            print(f"--field-file: нет файла {raw_path} (поле «{name}»)",
+                  file=sys.stderr)
+            return 2
+        text = src.read_text(encoding="utf-8").strip()
+        if not text:
+            print(f"--field-file: файл {raw_path} пуст — поле «{name}» затёрло бы "
+                  f"то, что в задаче уже написано", file=sys.stderr)
+            return 2
+        pairs.append((name, text))
+
     args.field = pairs
 
     if args.attach and args.description:

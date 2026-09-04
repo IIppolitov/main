@@ -1,7 +1,7 @@
 ---
 description: Разобрать баг из Яндекс Трекера и найти причину в коде админки
 argument-hint: SUPPORTDEV-1788 [SUPPORTDEV-1790 ...] [--links]
-allowed-tools: Bash(.claude/scripts/tracker-issue.sh:*), Bash(.claude/scripts/wiki-page.sh:*), Bash(.claude/scripts/client-env.sh:*), Bash(.claude/scripts/db-query.sh:*), Read, Grep, Glob
+allowed-tools: Bash(.claude/scripts/tracker-issue.sh:*), Bash(.claude/scripts/wiki-page.sh:*), Bash(.claude/scripts/client-env.sh:*), Bash(.claude/scripts/db-query.sh:*), Bash(.claude/scripts/work-timer.py:*), Read, Grep, Glob
 ---
 
 Разбери задачу из Яндекс Трекера: **$ARGUMENTS**
@@ -10,6 +10,19 @@ allowed-tools: Bash(.claude/scripts/tracker-issue.sh:*), Bash(.claude/scripts/wi
 > не заводить — даже если причина очевидна и фикс в одну строку. Закончи разбором и
 > предложением, что чинить, и остановись. К реализации переходить только по отдельной
 > команде пользователя.
+
+## 0. Засеки время
+
+```
+python3 .claude/scripts/work-timer.py <ключ задачи>
+```
+
+Такую же отметку ставь в начале каждого своего ответа и перед тем, как отдать ход человеку.
+По плотности отметок потом считается, сколько времени работа шла и сколько по ней реально
+работали, — часы в Трекер вносит человек, и вспоминать их к концу дня ему нечем.
+
+Ключей несколько — заводи секундомер по первому: работа всё равно одна. Скрипт ничего
+не отправляет и в Трекер не пишет, отметки лежат на твоей машине.
 
 ## 1. Выгрузи задачи
 
@@ -295,3 +308,7 @@ bash .claude/scripts/db-query.sh --profile <клиент> -d <база> \
 Дальше, по отдельной команде пользователя: `analyst` — если постановка мутная,
 `database` — если нужна миграция, `backend` / `frontend` — реализация фикса,
 `qa` — тесты и регрессия, `reviewer` (+ `security` по триггерам) — обязательный гейт перед PR.
+
+**По итогу починки** — когда фикс написан и PR создан — отчёт для команды технической
+поддержки собирает и кладёт в задачу `/pbe-results <ключ>`. Сейчас его не пиши: фикса ещё нет,
+а без него нет блоков «как починили» и «какой охват», ради которых отчёт и читают.

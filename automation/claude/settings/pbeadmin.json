@@ -144,7 +144,10 @@
       "Bash(gh api graphql:*)",
       "Bash(python3 .claude/scripts/tracker-create.py:*)",
       "Bash(.claude/scripts/tracker-create.py:*)",
-      "Bash(./.claude/scripts/tracker-create.py:*)"
+      "Bash(./.claude/scripts/tracker-create.py:*)",
+      "Bash(python3 .claude/scripts/tracker-update.py:*)",
+      "Bash(.claude/scripts/tracker-update.py:*)",
+      "Bash(./.claude/scripts/tracker-update.py:*)"
     ],
     "allow": [
       "Bash(php -l:*)",
@@ -208,7 +211,10 @@
       "Bash(bash .claude/scripts/wiki-page.sh:*)",
       "Bash(.claude/scripts/wiki-page.sh:*)",
       "Bash(bash .claude/scripts/client-env.sh:*)",
-      "Bash(.claude/scripts/client-env.sh:*)"
+      "Bash(.claude/scripts/client-env.sh:*)",
+      "Bash(python3 .claude/scripts/work-timer.py:*)",
+      "Bash(.claude/scripts/work-timer.py:*)",
+      "Bash(./.claude/scripts/work-timer.py:*)"
     ]
   },
   "hooks": {
