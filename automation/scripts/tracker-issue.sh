@@ -206,7 +206,7 @@ dump_issue() {
   ' <<<"$COMMENTS"
 
   # --- вложения ---------------------------------------------------------------
-  local ATT_COUNT DIR safe dest name mimetype size content
+  local ATT_COUNT DIR safe dest id idsafe name mimetype size content
   ATT_COUNT="$(jq -r 'length' <<<"$ATTACHMENTS")"
   if [[ "$ATT_COUNT" -gt 0 ]]; then
     echo
@@ -214,6 +214,7 @@ dump_issue() {
     echo
 
     # Подкаталог на задачу: одноимённые screenshot.png из разных задач иначе затрут друг друга.
+    # Внутри задачи от коллизии спасает не каталог, а префикс из id вложения — см. ниже.
     if [[ -n "$ATTACH_DIR" ]]; then
       DIR="$ATTACH_DIR/$KEY"
     else
@@ -221,10 +222,14 @@ dump_issue() {
     fi
     mkdir -p "$DIR"
 
-    while IFS=$'\t' read -r name mimetype size content; do
+    while IFS=$'\t' read -r id name mimetype size content; do
       [[ -n "$name" ]] || continue
+      # Имя файла = <id вложения>-<имя>. Внутри одной задачи имена повторяются штатно:
+      # каждый вставленный из буфера скриншот Трекер называет `image.png`, и без префикса
+      # шесть вложений задачи схлопывались в один файл — на диске оставалось последнее.
+      idsafe="$(printf '%s' "$id" | tr -c '[:alnum:]._-' '_')"
       safe="$(printf '%s' "$name" | tr -c '[:alnum:]._-' '_')"
-      dest="$DIR/$safe"
+      dest="$DIR/${idsafe}-${safe}"
 
       if [[ "$ALL_ATTACHMENTS" -eq 1 || "$mimetype" == image/* ]]; then
         if curl -sSf -o "$dest" \
@@ -233,12 +238,15 @@ dump_issue() {
              "$content"; then
           echo "- \`$name\` ($mimetype, $size Б) → скачано: $dest"
         else
+          # curl -f при HTTP-ошибке уже создал пустой файл: пустышка в каталоге вложений
+          # выглядит как скачанный файл, поэтому убираем.
+          rm -f "$dest"
           echo "- \`$name\` ($mimetype, $size Б) — скачать не удалось"
         fi
       else
         echo "- \`$name\` ($mimetype, $size Б) — не скачано (не изображение; \`--all-attachments\` чтобы забрать)"
       fi
-    done < <(jq -r '.[] | [.name, (.mimetype // "?"), (.size // 0), .content] | @tsv' <<<"$ATTACHMENTS")
+    done < <(jq -r '.[] | [(.id // "noid"), .name, (.mimetype // "?"), (.size // 0), .content] | @tsv' <<<"$ATTACHMENTS")
   fi
 
   # Связи собираем только у явно запрошенных задач — второго уровня нет.
