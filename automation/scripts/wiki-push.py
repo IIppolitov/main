@@ -151,12 +151,17 @@ def rewrite_links(text: str, src: Path, slug_map: dict[Path, str]) -> tuple[str,
     Оставить относительную ссылку нельзя: в Вики она ведёт в никуда. Молча
     выкинуть тоже нельзя — поэтому всё, что развернулось в текст, возвращается
     списком и печатается в отчёте.
+
+    Путь от корня (`/homepage/...`) — уже адрес Вики, а не ссылка на файл
+    репозитория, и трогать его нельзя: так записаны картинки
+    `![x](/раздел/.files/x.png =600x400)` и вложения `:file[…](/раздел/.files/…)`.
+    Развернув их в текст, мы бы вырезали из страницы все иллюстрации.
     """
     dropped: list[str] = []
 
     def repl(m: re.Match) -> str:
         label, href = m.group(1), m.group(2)
-        if href.startswith(("http://", "https://", "mailto:", "#")):
+        if href.startswith(("http://", "https://", "mailto:", "#", "/")):
             return m.group(0)
 
         anchor = ""
