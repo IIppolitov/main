@@ -25,7 +25,9 @@
 в `CLAUDE.md` его репозитория — инструкции на него ссылаются, а не пересказывают.
 
 Публикуются в раздел [powbee/instrumenty/claude-code](https://wiki.yandex.ru/powbee/instrumenty/claude-code):
-[claude-code/README.md](claude-code/README.md) — сама страница раздела, остальные — дочерние к ней.
+[claude-code/osnovy.md](claude-code/osnovy.md) — сама страница раздела, документы команд — дочерние
+к ней. Указатель [claude-code/README.md](claude-code/README.md) остаётся только здесь: в Вики его
+роль играет дерево раздела.
 
 | Документ | Кому |
 |---|---|

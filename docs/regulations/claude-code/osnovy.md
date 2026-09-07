@@ -1,7 +1,7 @@
 # Claude Code: основы работы
 
 > **Рабочая копия — ведём и правим здесь, отсюда же публикуем.**
-> Страница в Вики: [powbee/instrumenty/claude-code/claude-code-osnovy-raboty](https://wiki.yandex.ru/powbee/instrumenty/claude-code/claude-code-osnovy-raboty).
+> Страница в Вики: [powbee/instrumenty/claude-code](https://wiki.yandex.ru/powbee/instrumenty/claude-code).
 
 | | |
 |---|---|

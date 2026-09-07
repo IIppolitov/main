@@ -82,7 +82,7 @@ bash .claude/scripts/tracker-issue.sh $ARGUMENTS --attach-dir <твой scratchp
 bash .claude/scripts/wiki-page.sh <slug|ссылка> [ещё slug/ссылка ...]
 ```
 
-Принимает и slug (`powbee/reglamenty/claude-code`), и ссылку целиком: схема, домен, `?query`
+Принимает и slug (`powbee/instrumenty/claude-code`), и ссылку целиком: схема, домен, `?query`
 и `#якорь` отбрасываются, `%`-кодировка кириллицы раскодируется — ссылку из адресной строки
 можно передавать как есть. Несколько страниц за вызов разделяются строкой `---`, повторы
 выгружаются один раз.

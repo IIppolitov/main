@@ -153,4 +153,4 @@
 ---
 
 Пример использования
-[изображение: image.png](https://wiki.yandex.ru/powbee/reglamenty/treker-new/.files/image.png)  [изображение: image.png](https://wiki.yandex.ru/powbee/reglamenty/treker-new/.files/image-1.png)
+[изображение: image.png](https://wiki.yandex.ru/powbee/processy/ocheredi/.files/image.png)  [изображение: image.png](https://wiki.yandex.ru/powbee/processy/ocheredi/.files/image-1.png)
