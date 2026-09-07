@@ -1,7 +1,7 @@
 # Claude Code в админке (pbeadmin)
 
 > **Рабочая копия — ведём и правим здесь, отсюда же публикуем.**
-> Страница в Вики: [powbee/reglamenty/claude-code/claude-code-v-adminke-pbeadmin](https://wiki.yandex.ru/powbee/reglamenty/claude-code/claude-code-v-adminke-pbeadmin).
+> Страница в Вики: [powbee/instrumenty/claude-code/claude-code-v-adminke-pbeadmin](https://wiki.yandex.ru/powbee/instrumenty/claude-code/claude-code-v-adminke-pbeadmin).
 
 | | |
 |---|---|

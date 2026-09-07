@@ -1,7 +1,7 @@
 # Этап 9 — Распределение задач между разработчиками
 
 > **Рабочая копия — здесь ведём и дописываем.** Регламент не финальный.
-> Выгружено из Вики 2026-08-12: [powbee/reglamenty/treker-new/crm-svodnyjj-reglament/jetap-9-raspredelenie-zadach-mezhdu-razrabotchikam](https://wiki.yandex.ru/powbee/reglamenty/treker-new/crm-svodnyjj-reglament/jetap-9-raspredelenie-zadach-mezhdu-razrabotchikam).
+> Выгружено из Вики 2026-08-12: [powbee/processy/ocheredi/crm-svodnyjj-reglament/jetap-9-raspredelenie-zadach-mezhdu-razrabotchikam](https://wiki.yandex.ru/powbee/processy/ocheredi/crm-svodnyjj-reglament/jetap-9-raspredelenie-zadach-mezhdu-razrabotchikam).
 > Первоисточник с тех пор мог измениться — сверяться перед переносом правок обратно.
 
 ## 1. Область применения

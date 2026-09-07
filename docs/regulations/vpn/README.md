@@ -1,7 +1,7 @@
-# ВПН
+# ВПН: доступ к внешним сервисам
 
 > **Рабочая копия — ведём и правим здесь, отсюда же публикуем.**
-> Страница в Вики: [powbee/reglamenty/vpn](https://wiki.yandex.ru/powbee/reglamenty/vpn).
+> Страница в Вики: [powbee/instrumenty/vpn-vneshnij](https://wiki.yandex.ru/powbee/instrumenty/vpn-vneshnij).
 
 | | |
 |---|---|

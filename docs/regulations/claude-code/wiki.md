@@ -1578,7 +1578,7 @@ wiki-push.py <файл> --apply --create    # + создать страницу,
 # Заголовок страницы
 
 > **Рабочая копия — ведём и правим здесь, отсюда же публикуем.**
-> Страница в Вики: [powbee/reglamenty/vpn](https://wiki.yandex.ru/powbee/reglamenty/vpn).
+> Страница в Вики: [powbee/instrumenty/vpn-vneshnij](https://wiki.yandex.ru/powbee/instrumenty/vpn-vneshnij).
 ```
 
 Отдельной карты «файл → страница» нет намеренно: она разошлась бы с файлами
@@ -1669,7 +1669,7 @@ claude mcp add powbee-wiki -- python3 ~/bin/pbe-wiki/wiki-mcp.py
 `wiki_comments`; при первом обращении Claude спросит разрешение.
 
 Дальше разговор выглядит так: «посмотри
-`https://wiki.yandex.ru/powbee/reglamenty/vpn` и скажи, что там про роутинг» —
+`https://wiki.yandex.ru/powbee/instrumenty/vpn-vneshnij` и скажи, что там про роутинг» —
 и всё.
 
 **Три грабли этой настройки:**

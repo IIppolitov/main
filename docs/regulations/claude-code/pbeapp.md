@@ -1,7 +1,7 @@
 # Claude Code в приложении (pbeapp)
 
 > **Рабочая копия — ведём и правим здесь, отсюда же публикуем.**
-> Страница в Вики: [powbee/reglamenty/claude-code/claude-code-v-prilozhenii-pbeapp](https://wiki.yandex.ru/powbee/reglamenty/claude-code/claude-code-v-prilozhenii-pbeapp).
+> Страница в Вики: [powbee/instrumenty/claude-code/claude-code-v-prilozhenii-pbeapp](https://wiki.yandex.ru/powbee/instrumenty/claude-code/claude-code-v-prilozhenii-pbeapp).
 
 | | |
 |---|---|

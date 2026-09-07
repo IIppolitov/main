@@ -1,7 +1,7 @@
 # Жизненный цикл задачи на доработку CRM-системы — Сводный регламент
 
 > **Рабочая копия — здесь ведём и дописываем.** Регламент не финальный.
-> Выгружено из Вики 2026-08-12: [powbee/reglamenty/treker-new/crm-svodnyjj-reglament](https://wiki.yandex.ru/powbee/reglamenty/treker-new/crm-svodnyjj-reglament).
+> Выгружено из Вики 2026-08-12: [powbee/processy/ocheredi/crm-svodnyjj-reglament](https://wiki.yandex.ru/powbee/processy/ocheredi/crm-svodnyjj-reglament).
 >
 > **Синхронизировано с Вики 12.08.2026.** В этот день внесены существенные
 > правки: оценка описана как набор полей задачи, введена обязательная подзадача

@@ -18,23 +18,25 @@
 **Конспект** процесса техподдержки — регламент утверждён 07.08.2026, живёт в Вики,
 у нас только выжимка для памяти. Править его тут бессмысленно.
 
-**Инструкции по Claude Code** — три документа: общая база и по одному на команду
+**Инструкции по Claude Code** — четыре документа: общая база и по одному на команду
 разработки, плюс [claude-code/wiki.md](claude-code/wiki.md) про работу с Вики
 через агента. Статус смешанный: раздел «Ядро» и правила по данным обязательны,
 остальное — приёмы. Источник истины по коду и внутреннему процессу проекта остаётся
 в `CLAUDE.md` его репозитория — инструкции на него ссылаются, а не пересказывают.
 
-Указатель — [claude-code/README.md](claude-code/README.md).
+Публикуются в раздел [powbee/instrumenty/claude-code](https://wiki.yandex.ru/powbee/instrumenty/claude-code):
+[claude-code/README.md](claude-code/README.md) — сама страница раздела, остальные — дочерние к ней.
 
 | Документ | Кому |
 |---|---|
 | [claude-code/osnovy.md](claude-code/osnovy.md) | всем: доступ, VPN, установка, ядро правил, работа с данными |
 | [claude-code/pbeadmin.md](claude-code/pbeadmin.md) | команде админки |
 | [claude-code/pbeapp.md](claude-code/pbeapp.md) | команде приложения |
+| [claude-code/pbedataengineer.md](claude-code/pbedataengineer.md) | отделу дата-инженеров |
 | [claude-code/wiki.md](claude-code/wiki.md) | всем, кто работает с Вики через агента — включая тех, кто вне разработки |
 
 **VPN** — каталог [vpn/](vpn/), публикуется не в раздел Claude Code, а в
-[powbee/reglamenty/vpn](https://wiki.yandex.ru/powbee/reglamenty/vpn):
+[powbee/instrumenty/vpn-vneshnij](https://wiki.yandex.ru/powbee/instrumenty/vpn-vneshnij):
 [vpn/README.md](vpn/README.md) — сам раздел (как устроен доступ, кто выдаёт, общие правила),
 [vpn/happ.md](vpn/happ.md) — дочерняя страница с порядком настройки клиента. Клиент и правила
 роутинга нужны не только под Claude Code, поэтому основы на них ссылаются, а порядок настройки

@@ -1,7 +1,7 @@
 # Этап 12 — Тестирование клиентом
 
 > **Рабочая копия — здесь ведём и дописываем.** Регламент не финальный.
-> Выгружено из Вики 2026-08-12: [powbee/reglamenty/treker-new/crm-svodnyjj-reglament/jetap-12-testirovanie-klientom](https://wiki.yandex.ru/powbee/reglamenty/treker-new/crm-svodnyjj-reglament/jetap-12-testirovanie-klientom).
+> Выгружено из Вики 2026-08-12: [powbee/processy/ocheredi/crm-svodnyjj-reglament/jetap-12-testirovanie-klientom](https://wiki.yandex.ru/powbee/processy/ocheredi/crm-svodnyjj-reglament/jetap-12-testirovanie-klientom).
 > Первоисточник с тех пор мог измениться — сверяться перед переносом правок обратно.
 
 ## 1. Область применения

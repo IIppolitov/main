@@ -4,12 +4,12 @@
 |---|---|
 | **Тип** | Конспект, не первоисточник |
 | **Дата конспекта** | 2026-08-12 |
-| **Первоисточник** | [Вики: SUPPORT — сводный регламент](https://wiki.yandex.ru/powbee/reglamenty/treker-new/0a4ede3eb24c/) |
+| **Первоисточник** | [Вики: SUPPORT — сводный регламент](https://wiki.yandex.ru/powbee/processy/ocheredi/support-svodnyjj-reglament/) |
 | **Статус первоисточника** | Утверждён 07.08.2026: Ипполитов Иван, Улич Дмитрий, Улич Анна |
 
 > Это конспект общими мазками — чтобы держать процесс в голове, не открывая Вики.
 > **Спорные вопросы решаются по первоисточнику, а не по этому файлу.**
-> Полный текст — в Вики: `powbee/reglamenty/treker-new/0a4ede3eb24c/1-pervaja-reakcija`
+> Полный текст — в Вики: `powbee/processy/ocheredi/support-svodnyjj-reglament/1-pervaja-reakcija`
 > и далее `2-…`, `3-…`, `4-…`.
 
 ## Четыре этапа

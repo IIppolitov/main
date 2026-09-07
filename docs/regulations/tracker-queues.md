@@ -1,7 +1,7 @@
 # Описание очередей
 
 > **Рабочая копия — здесь ведём и дописываем.** Регламент не финальный.
-> Выгружено из Вики 2026-08-12: [powbee/reglamenty/treker-new](https://wiki.yandex.ru/powbee/reglamenty/treker-new).
+> Выгружено из Вики 2026-08-12: [powbee/processy/ocheredi](https://wiki.yandex.ru/powbee/processy/ocheredi).
 > Первоисточник с тех пор мог измениться — сверяться перед переносом правок обратно.
 
 > **Изменения!**
