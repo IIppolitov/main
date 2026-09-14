@@ -1,7 +1,7 @@
 # Личный проект в Claude Code
 
 > **Рабочая копия — ведём и правим здесь, отсюда же публикуем.**
-> Дочерняя страница раздела [powbee/instrumenty/claude-code](https://wiki.yandex.ru/powbee/instrumenty/claude-code).
+> Страница в Вики: [powbee/instrumenty/claude-code/lichnyjj-proekt-v-claude-code](https://wiki.yandex.ru/powbee/instrumenty/claude-code/lichnyjj-proekt-v-claude-code).
 
 | | |
 |---|---|

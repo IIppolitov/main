@@ -1,7 +1,7 @@
 # Claude Code в разработке: GitHub и базы данных
 
 > **Рабочая копия — ведём и правим здесь, отсюда же публикуем.**
-> Дочерняя страница раздела [powbee/instrumenty/claude-code](https://wiki.yandex.ru/powbee/instrumenty/claude-code).
+> Страница в Вики: [powbee/instrumenty/claude-code/claude-code-v-razrabotke-github-i-bazy-dannykh](https://wiki.yandex.ru/powbee/instrumenty/claude-code/claude-code-v-razrabotke-github-i-bazy-dannykh).
 
 | | |
 |---|---|
