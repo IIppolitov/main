@@ -1,7 +1,7 @@
 # Claude Code в дата-инженерии (pbedataengineer)
 
 > **Рабочая копия — ведём и правим здесь, отсюда же публикуем.**
-> Страница в Вики: [powbee/instrumenty/claude-code/claude-code-v-data-inzhenerii-pbedataengineer](https://wiki.yandex.ru/powbee/instrumenty/claude-code/claude-code-v-data-inzhenerii-pbedataengineer).
+> Страница в Вики: [powbee/instrumenty/claude-code/claude-code-v-razrabotke-github-i-bazy-dannykh/claude-code-v-data-inzhenerii-pbedataengineer](https://wiki.yandex.ru/powbee/instrumenty/claude-code/claude-code-v-razrabotke-github-i-bazy-dannykh/claude-code-v-data-inzhenerii-pbedataengineer).
 
 | | |
 |---|---|
