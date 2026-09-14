@@ -6,7 +6,7 @@
 |---|---|---|
 | [tracker-queues.md](tracker-queues.md) | Черновик, дописываем | **Здесь** |
 | [crm-lifecycle/](crm-lifecycle/) | Черновик, дописываем | **Здесь** |
-| [claude-code/](claude-code/) | Черновик, к выдаче командам | **Здесь** |
+| [claude-code/](claude-code/) | Черновик, к выдаче командам и менеджерам | **Здесь** |
 | [claude-code/wiki.md](claude-code/wiki.md) | Черновик, в Вики не публикуется | **Здесь** |
 | [vpn/](vpn/) | Черновик, к выдаче командам | **Здесь** |
 | [pbeadmin-local.md](pbeadmin-local.md) | Черновик, к выдаче тестировщикам | **Здесь** |
@@ -18,24 +18,30 @@
 **Конспект** процесса техподдержки — регламент утверждён 07.08.2026, живёт в Вики,
 у нас только выжимка для памяти. Править его тут бессмысленно.
 
-**Инструкции по Claude Code** — четыре документа: общая база и по одному на команду
-разработки, плюс [claude-code/wiki.md](claude-code/wiki.md) про работу с Вики
-через агента. Статус смешанный: раздел «Ядро» и правила по данным обязательны,
+**Инструкции по Claude Code** — семь документов. Инструмент выдан не только разработке,
+поэтому общая часть отделена от ролевой: [основы](claude-code/osnovy.md) обязательны всем,
+дальше каждый читает свою подстраницу. Статус смешанный: «Ядро» в основах обязательно,
 остальное — приёмы. Источник истины по коду и внутреннему процессу проекта остаётся
 в `CLAUDE.md` его репозитория — инструкции на него ссылаются, а не пересказывают.
 
 Публикуются в раздел [powbee/instrumenty/claude-code](https://wiki.yandex.ru/powbee/instrumenty/claude-code):
-[claude-code/osnovy.md](claude-code/osnovy.md) — сама страница раздела, документы команд — дочерние
+[claude-code/osnovy.md](claude-code/osnovy.md) — сама страница раздела, остальные — дочерние
 к ней. Указатель [claude-code/README.md](claude-code/README.md) остаётся только здесь: в Вики его
 роль играет дерево раздела.
 
 | Документ | Кому |
 |---|---|
-| [claude-code/osnovy.md](claude-code/osnovy.md) | всем: доступ, VPN, установка, ядро правил, работа с данными |
+| [claude-code/osnovy.md](claude-code/osnovy.md) | всем: доступ, VPN, установка, Трекер и Вики, API консоли, устройство обвязки, ядро правил |
+| [claude-code/razrabotka.md](claude-code/razrabotka.md) | разработке и дата-инженерам: `gh`, границы работы с гитом, доступ к боевым базам |
+| [claude-code/lichnyj-proekt.md](claude-code/lichnyj-proekt.md) | менеджерам и всем вне разработки: своё рабочее пространство, git для не-программиста |
 | [claude-code/pbeadmin.md](claude-code/pbeadmin.md) | команде админки |
 | [claude-code/pbeapp.md](claude-code/pbeapp.md) | команде приложения |
 | [claude-code/pbedataengineer.md](claude-code/pbedataengineer.md) | отделу дата-инженеров |
 | [claude-code/wiki.md](claude-code/wiki.md) | всем, кто работает с Вики через агента — включая тех, кто вне разработки |
+
+Комплект для личного проекта — утилиты, готовые команды и стартовое сообщение агенту —
+лежит в [automation/claude/lichnyj-proekt/](../../automation/claude/lichnyj-proekt/) и выдаётся
+человеку вместе со ссылкой на страницу.
 
 **VPN** — каталог [vpn/](vpn/), публикуется не в раздел Claude Code, а в
 [powbee/instrumenty/vpn-vneshnij](https://wiki.yandex.ru/powbee/instrumenty/vpn-vneshnij):
