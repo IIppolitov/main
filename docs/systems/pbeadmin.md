@@ -78,7 +78,7 @@ IQVIA OneKey, IQVIA ID360, МДЛП, Mindbox, SAP, внешний сайт за�
 
 | Проект | Заказчик | Статус |
 |---|---|---|
-| [Мероприятия+](../projects/meropriyatiya-plus.md) — интеграция с МТС-Линк, модуль `CustomEvents` | Roche | Разработка идёт; объём разошёлся с оценкой |
+| [Мероприятия+](../projects/projects/roc-meropriyatiya-plus.md) — интеграция с МТС-Линк, модуль `CustomEvents` | Roche | Разработка идёт; объём разошёлся с оценкой |
 
 ## Риски и открытые вопросы
 
