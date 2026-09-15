@@ -18,6 +18,12 @@
     ./tracker-create.py pbeapp     задача.md --estimate 4h --apply
     ./tracker-create.py pbeconsole задача.md --assignee iippolitov --apply
 
+Проект (спринт, клиентский пул, «Вне спринта») задаётся --project. Номер помнить
+не надо: принимается и часть названия, и ссылка на проект.
+
+    ./tracker-create.py pbeadmin задача.md --project "релиз админка 10" --apply
+    ./tracker-create.py pbeadmin задача.md --project 1050 --apply
+
 Подзадачи заводятся теми же пресетами плюс --parent: родитель задаёт связь,
 пресет — очередь, тип и компонент.
 
@@ -370,6 +376,70 @@ def resolve_client(raw: str | None, preset: dict, force: bool) -> str | None:
     return client
 
 
+PROJECT_URL_RE = re.compile(r"/projects/(\d+)")
+
+
+def resolve_project(tracker: "Tracker", raw: str) -> tuple[int, str]:
+    """«1050», ссылка на проект или часть названия → (номер, название).
+
+    Название здесь важнее номера. Номер проекта человек не помнит и в Трекере
+    глазами не находит: проектов под три сотни, называются они похоже
+    («Спринт Админка 18», «Релиз админка 10. Вне спринта»), а в интерфейсе
+    показывается имя, а не id. Поэтому сопоставляем по словам: каждое слово
+    запроса должно встретиться в названии, порядок и регистр не важны.
+
+    Несколько совпадений — отказ со списком: молча взять первое значит завести
+    задачу в чужой спринт, а это заметят не раньше сборки релиза.
+    """
+    value = raw.strip()
+
+    url = PROJECT_URL_RE.search(value)
+    if url:
+        value = url.group(1)
+
+    if value.isdigit():
+        found = tracker.project(int(value))
+        if found is None:
+            raise ValueError(f"в Трекере нет проекта {value} или нет доступа")
+        return int(value), str(found.get("name", "?"))
+
+    projects = tracker.projects()
+    words = value.lower().split()
+    matches = [p for p in projects
+               if all(w in str(p.get("name", "")).lower() for w in words)]
+
+    if len(matches) == 1:
+        return int(matches[0]["id"]), str(matches[0]["name"])
+
+    if not matches:
+        # Ноль совпадений чаще всего значит не «проекта нет», а «назвал своими
+        # словами»: «вне релиза 10» вместо «Релиз админка 10. Вне спринта».
+        # Поэтому показываем то, что зацепилось хотя бы одним словом.
+        near = [p for p in projects
+                if any(w in str(p.get("name", "")).lower() for w in words)]
+        raise ValueError(
+            f"по «{raw}» проект не найден.\n" + project_list(near, "Похожее"))
+
+    raise ValueError(
+        f"по «{raw}» подходит больше одного проекта — уточни название "
+        f"или назови номер.\n" + project_list(matches, "Подходит"))
+
+
+def project_list(projects: list[dict], title: str, limit: int = 12) -> str:
+    """Кандидаты человеку: номер, название, состояние. Свежие сверху —
+    задачу заводят в проект этого месяца, а не позапрошлого."""
+    if not projects:
+        return "  Ни одного похожего проекта не нашлось"
+    rows = sorted(projects, key=lambda p: int(p.get("id", 0)), reverse=True)
+    out = [f"  {title}:"]
+    for p in rows[:limit]:
+        out.append(f"    {p['id']:>5}  {p.get('name', '?')}  "
+                   f"[{p.get('status', '?')}]")
+    if len(rows) > limit:
+        out.append(f"    … и ещё {len(rows) - limit}")
+    return "\n".join(out)
+
+
 def build_summary(title: str, prefix: str | None) -> str:
     """Мнемоника в начале названия — требование регламента очереди."""
     if not prefix or title.upper().startswith(prefix.upper()):
@@ -436,6 +506,18 @@ class Tracker:
                 return candidate
         return None
 
+    def project(self, short_id: int) -> dict | None:
+        code, body = self._call("GET", f"{API}/projects/{short_id}")
+        return body if code == 200 and isinstance(body, dict) else None
+
+    def projects(self) -> list[dict]:
+        """Все проекты одной страницей: их под три сотни, и поиска по имени
+        у ручки нет — фильтруем у себя."""
+        code, body = self._call("GET", f"{API}/projects?perPage=1000")
+        if code != 200 or not isinstance(body, list):
+            raise ValueError(f"не прочитан список проектов: HTTP {code}")
+        return body
+
     def issue(self, key: str) -> dict | None:
         """Родитель до создания подзадачи: опечатка в ключе иначе всплывёт
         уже после того, как задача заведена не туда."""
@@ -480,6 +562,10 @@ def main() -> int:
     ap.add_argument("--parent", metavar="CRM-1234",
                     help="родительская задача: создаётся подзадачей. "
                          "Ключ проверяется до создания")
+    ap.add_argument("--project", metavar="НАЗВАНИЕ|НОМЕР",
+                    help="проект: спринт, клиентский пул, «Вне спринта». "
+                         "Принимается часть названия, номер или ссылка на "
+                         "проект. Не указан — задача остаётся без проекта")
     ap.add_argument("--apply", action="store_true",
                     help="создать задачу (по умолчанию — сухой прогон)")
     ap.add_argument("--force", action="store_true",
@@ -523,6 +609,14 @@ def main() -> int:
     except ValueError as e:
         print(f"✗ {e}", file=sys.stderr)
         return 1
+
+    project: tuple[int, str] | None = None
+    if args.project:
+        try:
+            project = resolve_project(tracker, args.project)
+        except ValueError as e:
+            print(f"✗ {e}", file=sys.stderr)
+            return 1
 
     parent = None
     if args.parent:
@@ -571,6 +665,11 @@ def main() -> int:
         payload["assignee"] = assignee
     if parent:
         payload["parent"] = parent
+    if project:
+        # v3 различает основной проект и дополнительные: задача в спринте
+        # и в клиентском пуле разом — обычное дело. Скрипт ставит основной,
+        # дополнительные добираются в Трекере руками.
+        payload["project"] = {"primary": project[0]}
 
     duplicates = tracker.find_by_summary(preset["queue"], summary)
 
@@ -586,6 +685,7 @@ def main() -> int:
     print(f"  клиент:      {client + ' — ' + MNEMONICS.get(client, 'нет в справочнике') if client else '—'}")
     print(f"  исполнитель: {assignee or '— (не назначается)'}"
           f"{' (умолчание пресета)' if assignee and not args.assignee else ''}")
+    print(f"  проект:      {project[1] + f' ({project[0]})' if project else '— (не назначается)'}")
     if parent:
         print(f"  родитель:    {parent} — "
               f"{parent_issue.get('summary', '?')}")
