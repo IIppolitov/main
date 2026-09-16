@@ -111,7 +111,7 @@ def address(login):
 
 
 def login_from_name(path):
-    m = re.match(r"^soobshhenie-.*?-([a-z0-9_.\-]+)$", Path(path).stem)
+    m = re.match(r"^soobshhenie-.+-([a-z0-9_.]+)$", Path(path).stem)
     return m.group(1) if m else None
 
 
