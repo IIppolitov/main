@@ -198,7 +198,7 @@
 
 ## ИИ-ассистент Агротек
 
-Паспорт проекта — [projects/projects/agrotek-ai-assistant.md](projects/projects/agrotek-ai-assistant.md).
+Паспорт проекта — [projects/projects/agrotek-ai-assistant/README.md](projects/projects/agrotek-ai-assistant/README.md).
 Первый проект вне фармы, решение идти принято 29.09.2026: голосовой ИИ-ассистент менеджера по продажам поверх
 «Битрикс24» и «1С» агрохолдинга. ТЗ рамочное, от нас ждут архитектуру, этапы
 и вопросы, а не цену. Наши прилага и админка не подходят — отдельный продукт.
