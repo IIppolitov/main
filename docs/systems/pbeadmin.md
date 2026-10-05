@@ -17,9 +17,14 @@
 согласия, промо-циклы, рассылки и интеграции с внешними системами. Является
 источником данных для мобильного приложения [pbeapp](pbeapp.md).
 
-Важно: это **не** CRM «визитов/врачей/аптек» в бытовом смысле. Основные
-сущности — `Person` (HCP), `Org` (HCO), `Consent`, `Campaign`/`PromoCycle`,
-`Staff`/`User`, `Message`/`Template`, `DrugBrand`/`DrugSKU`, `Survey`.
+Основные сущности — `Person` (HCP), `Org` (HCO), `Consent`,
+`Campaign`/`PromoCycle`, `Staff`/`User`, `Message`/`Template`,
+`DrugBrand`/`DrugSKU`, `Survey`. Визиты в коде называются **активностями**
+(`Activity`, представление `vActivities` поверх `facts.tEvents` в базе
+приложения): пишет их приложение, админка читает. В `CLAUDE.md` админки
+сказано обратное — «визитов как таблиц нет»; это неверно (бэклог, ИА-6).
+
+ИИ-ассистент админки и план подключения разделов — [ai-assistant.md](ai-assistant.md).
 
 ## Воркфлоу
 
