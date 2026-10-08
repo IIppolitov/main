@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(automation/scripts/db-query.sh:*)",
+      "Bash(bash automation/scripts/db-query.sh:*)",
+      "Bash(./automation/scripts/db-query.sh:*)"
+    ]
+  }
+}
